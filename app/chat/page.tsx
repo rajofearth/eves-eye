@@ -28,6 +28,7 @@ interface VideoJob {
   filename: string;
   status: string;
   total_frames: number;
+  completed_frames: number;
   summary: string | null;
   created_at: string;
   threat_count: number;
@@ -35,6 +36,8 @@ interface VideoJob {
   duration_sec: number | null;
   thumbnail_face: string | null;
 }
+
+type UploadPhase = "idle" | "uploading" | "analyzing";
 
 interface ChatSession {
   id: string;
@@ -90,10 +93,37 @@ function formatDate(iso: string) {
 
 const toolLabel: Record<string, string> = {
   get_time_window: "TIME WINDOW SCAN",
+  get_threat_window: "THREAT WINDOW",
   get_threats: "THREAT TIMELINE",
+  get_time_period_assessment: "PERIOD ASSESSMENT",
   get_face_roster: "FACE ROSTER",
   get_frame_snapshot: "FRAME SNAPSHOT",
+  run_video_subagent: "VIDEO SUBAGENT",
 };
+
+const ANALYSIS_PHASES = new Set([
+  "pending",
+  "extracting",
+  "analyzing",
+  "summarizing",
+]);
+
+function isVideoReady(v: VideoJob | undefined) {
+  return v?.status === "completed";
+}
+
+function getAnalysisLabel(v: VideoJob) {
+  if (v.status === "extracting") return "Extracting frames…";
+  if (v.status === "analyzing") {
+    const pct = Math.round(
+      (v.completed_frames / Math.max(v.total_frames, 1)) * 100,
+    );
+    return `Analysing ${pct}%`;
+  }
+  if (v.status === "summarizing") return "Summarising threats…";
+  if (v.status === "pending") return "Queued…";
+  return v.status;
+}
 
 // ── Tool Card ────────────────────────────────────────────────────────────────
 
@@ -215,14 +245,28 @@ function MessageBubble({ msg }: { msg: StreamMessage }) {
 function VideoPickerModal({
   allVideos,
   tagged,
+  uploadPhase,
   onAdd,
+  onUpload,
   onClose,
 }: {
   allVideos: VideoJob[];
   tagged: string[];
+  uploadPhase: UploadPhase;
   onAdd: (id: string) => void;
+  onUpload: (file: File) => void;
   onClose: () => void;
 }) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const completedVideos = allVideos.filter((v) => v.status === "completed");
+  const inProgressVideos = allVideos.filter((v) => ANALYSIS_PHASES.has(v.status));
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (file?.type.startsWith("video/")) onUpload(file);
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div className="w-full max-w-2xl rounded-xl border border-border bg-card shadow-2xl">
@@ -230,7 +274,7 @@ function VideoPickerModal({
           <div className="flex items-center gap-2">
             <Film className="w-4 h-4 text-primary" />
             <span className="font-mono text-xs font-bold uppercase tracking-wider">
-              SELECT_INTELLIGENCE_PAYLOAD
+              ADD_VIDEO_INTELLIGENCE
             </span>
           </div>
           <button
@@ -242,81 +286,142 @@ function VideoPickerModal({
           </button>
         </div>
 
-        <div className="p-5 max-h-[60vh] overflow-y-auto">
-          {allVideos.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
-              <Video className="w-10 h-10 text-muted-foreground/30" />
-              <p className="font-mono text-xs text-muted-foreground uppercase">
-                No analysed videos found.
+        <div className="p-5 max-h-[65vh] overflow-y-auto space-y-5">
+          {/* Upload zone */}
+          <div
+            role="button"
+            tabIndex={0}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") fileInputRef.current?.click();
+            }}
+            className={`flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-6 py-8 transition-colors cursor-pointer ${
+              uploadPhase === "uploading"
+                ? "border-primary/50 bg-primary/5"
+                : "border-border hover:border-primary/40 hover:bg-muted/30"
+            }`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="video/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) onUpload(file);
+                e.target.value = "";
+              }}
+            />
+            {uploadPhase === "uploading" ? (
+              <>
+                <span className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                <p className="font-mono text-[10px] text-primary uppercase">
+                  Uploading &amp; starting analysis…
+                </p>
+              </>
+            ) : (
+              <>
+                <Video className="w-8 h-8 text-muted-foreground/40" />
+                <p className="font-mono text-[10px] text-muted-foreground uppercase">
+                  Drop a new video or click to upload
+                </p>
+                <p className="font-mono text-[9px] text-muted-foreground/50">
+                  Will be analysed then auto-tagged to this session
+                </p>
+              </>
+            )}
+          </div>
+
+          {inProgressVideos.length > 0 && (
+            <div>
+              <p className="font-mono text-[9px] font-bold text-muted-foreground uppercase mb-2">
+                Analysing ({inProgressVideos.length})
               </p>
-              <Link
-                href="/analysis"
-                className="font-mono text-xs text-primary hover:underline uppercase"
-              >
-                Go to Video Analysis →
-              </Link>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-3">
-              {allVideos.map((v) => {
-                const isTagged = tagged.includes(v.id);
-                return (
-                  <button
-                    type="button"
+              <div className="grid grid-cols-2 gap-2">
+                {inProgressVideos.map((v) => (
+                  <div
                     key={v.id}
-                    onClick={() => !isTagged && onAdd(v.id)}
-                    disabled={isTagged}
-                    className={`flex flex-col gap-2 rounded-lg border p-3.5 text-left transition-all cursor-pointer ${
-                      isTagged
-                        ? "border-primary/40 bg-primary/5 opacity-60 cursor-not-allowed"
-                        : "border-border hover:border-primary/50 hover:bg-muted/50"
-                    }`}
+                    className="flex flex-col gap-1 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2"
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <Film className="w-3.5 h-3.5 text-primary shrink-0" />
-                        <span className="font-mono text-[10px] font-bold truncate text-foreground uppercase">
-                          {v.filename}
-                        </span>
-                      </div>
-                      {isTagged && (
-                        <span className="shrink-0 font-mono text-[8px] text-primary border border-primary/30 rounded-xs px-1 py-0.5">
-                          TAGGED
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-3">
-                      {v.threat_count > 0 && (
-                        <span className="flex items-center gap-1 font-mono text-[9px] text-red-400">
-                          <AlertTriangle className="w-2.5 h-2.5" />
-                          {v.threat_count} CRITICAL
-                        </span>
-                      )}
-                      {v.warning_count > 0 && (
-                        <span className="flex items-center gap-1 font-mono text-[9px] text-amber-400">
-                          <AlertTriangle className="w-2.5 h-2.5" />
-                          {v.warning_count} WARNING
-                        </span>
-                      )}
-                      {v.threat_count === 0 && v.warning_count === 0 && (
-                        <span className="font-mono text-[9px] text-emerald-400">
-                          NOMINAL
-                        </span>
-                      )}
-                      <span className="font-mono text-[9px] text-muted-foreground ml-auto">
-                        {formatDur(v.duration_sec)}
-                      </span>
-                    </div>
-                    {v.summary && (
-                      <p className="font-mono text-[9px] text-muted-foreground leading-relaxed line-clamp-2">
-                        {v.summary}
-                      </p>
-                    )}
-                  </button>
-                );
-              })}
+                    <span className="font-mono text-[10px] font-bold truncate uppercase">
+                      {v.filename}
+                    </span>
+                    <span className="font-mono text-[9px] text-amber-400">
+                      {getAnalysisLabel(v)}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
+
+          <div>
+            <p className="font-mono text-[9px] font-bold text-muted-foreground uppercase mb-2">
+              Pre-analysed ({completedVideos.length})
+            </p>
+            {completedVideos.length === 0 ? (
+              <p className="font-mono text-[10px] text-muted-foreground/60 text-center py-4 uppercase">
+                No completed analyses yet — upload above or use Video Analysis page
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                {completedVideos.map((v) => {
+                  const isTagged = tagged.includes(v.id);
+                  return (
+                    <button
+                      type="button"
+                      key={v.id}
+                      onClick={() => !isTagged && onAdd(v.id)}
+                      disabled={isTagged}
+                      className={`flex flex-col gap-2 rounded-lg border p-3.5 text-left transition-all cursor-pointer ${
+                        isTagged
+                          ? "border-primary/40 bg-primary/5 opacity-60 cursor-not-allowed"
+                          : "border-border hover:border-primary/50 hover:bg-muted/50"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Film className="w-3.5 h-3.5 text-primary shrink-0" />
+                          <span className="font-mono text-[10px] font-bold truncate text-foreground uppercase">
+                            {v.filename}
+                          </span>
+                        </div>
+                        {isTagged && (
+                          <span className="shrink-0 font-mono text-[8px] text-primary border border-primary/30 rounded-xs px-1 py-0.5">
+                            TAGGED
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        {v.threat_count > 0 && (
+                          <span className="flex items-center gap-1 font-mono text-[9px] text-red-400">
+                            <AlertTriangle className="w-2.5 h-2.5" />
+                            {v.threat_count} CRITICAL
+                          </span>
+                        )}
+                        {v.warning_count > 0 && (
+                          <span className="flex items-center gap-1 font-mono text-[9px] text-amber-400">
+                            <AlertTriangle className="w-2.5 h-2.5" />
+                            {v.warning_count} WARNING
+                          </span>
+                        )}
+                        {v.threat_count === 0 && v.warning_count === 0 && (
+                          <span className="font-mono text-[9px] text-emerald-400">
+                            NOMINAL
+                          </span>
+                        )}
+                        <span className="font-mono text-[9px] text-muted-foreground ml-auto">
+                          {formatDur(v.duration_sec)}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -338,6 +443,7 @@ export default function ChatPage() {
   const [allVideos, setAllVideos] = useState<VideoJob[]>([]);
   const [taggedVideoIds, setTaggedVideoIds] = useState<string[]>([]);
   const [showPicker, setShowPicker] = useState(false);
+  const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
 
   // Messages
   const [messages, setMessages] = useState<StreamMessage[]>([]);
@@ -380,6 +486,36 @@ export default function ChatPage() {
     loadSessions();
     loadVideos();
   }, [loadSessions, loadVideos]);
+
+  // Poll in-progress tagged videos
+  useEffect(() => {
+    const pendingIds = taggedVideoIds.filter((id) => {
+      const v = allVideos.find((x) => x.id === id);
+      return v && ANALYSIS_PHASES.has(v.status);
+    });
+
+    if (pendingIds.length === 0) return;
+
+    const poll = async () => {
+      await loadVideos();
+      for (const jobId of pendingIds) {
+        try {
+          const res = await fetch(`/api/analysis/status?jobId=${jobId}`);
+          const data = await res.json();
+          if (data.ok && data.job.status === "completed") {
+            await loadVideos();
+            setUploadPhase("idle");
+          }
+        } catch {
+          // ignore poll errors
+        }
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 1500);
+    return () => clearInterval(interval);
+  }, [taggedVideoIds, allVideos, loadVideos]);
 
   // ── Auto-scroll ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -441,7 +577,9 @@ export default function ChatPage() {
   const addVideo = useCallback(
     async (videoId: string) => {
       if (!activeSessionId) return;
-      const next = [...taggedVideoIds, videoId];
+      const next = taggedVideoIds.includes(videoId)
+        ? taggedVideoIds
+        : [...taggedVideoIds, videoId];
       setTaggedVideoIds(next);
       setShowPicker(false);
       await fetch(`/api/chat/sessions/${activeSessionId}`, {
@@ -451,6 +589,33 @@ export default function ChatPage() {
       });
     },
     [activeSessionId, taggedVideoIds],
+  );
+
+  const uploadVideo = useCallback(
+    async (file: File) => {
+      if (!activeSessionId) return;
+      setUploadPhase("uploading");
+
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const res = await fetch("/api/analysis/upload", {
+          method: "POST",
+          body: formData,
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "Upload failed");
+
+        setUploadPhase("analyzing");
+        await loadVideos();
+        await addVideo(data.jobId);
+      } catch (err) {
+        console.error("Upload error:", err);
+        setUploadPhase("idle");
+      }
+    },
+    [activeSessionId, addVideo, loadVideos],
   );
 
   const removeVideo = useCallback(
@@ -594,6 +759,13 @@ export default function ChatPage() {
   };
 
   const taggedVideos = allVideos.filter((v) => taggedVideoIds.includes(v.id));
+  const allTaggedReady =
+    taggedVideoIds.length > 0 &&
+    taggedVideoIds.every((id) => isVideoReady(allVideos.find((v) => v.id === id)));
+  const hasAnalyzingTagged = taggedVideoIds.some((id) => {
+    const v = allVideos.find((x) => x.id === id);
+    return v && ANALYSIS_PHASES.has(v.status);
+  });
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -736,30 +908,44 @@ export default function ChatPage() {
                   CONTEXT:
                 </span>
 
-                {taggedVideos.map((v) => (
+                {taggedVideos.map((v) => {
+                  const analyzing = ANALYSIS_PHASES.has(v.status);
+                  return (
                   <div
                     key={v.id}
-                    className="shrink-0 flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 group"
+                    className={`shrink-0 flex items-center gap-2 rounded-md border px-2.5 py-1.5 group ${
+                      analyzing
+                        ? "border-amber-500/40 bg-amber-500/5"
+                        : "border-border bg-card"
+                    }`}
                   >
-                    <Film className="w-3 h-3 text-primary" />
+                    <Film className={`w-3 h-3 ${analyzing ? "text-amber-400" : "text-primary"}`} />
                     <div className="flex flex-col">
                       <span className="font-mono text-[9px] font-bold text-foreground uppercase truncate max-w-28">
                         {v.filename}
                       </span>
                       <div className="flex items-center gap-1.5 mt-0.5">
-                        {v.threat_count > 0 && (
-                          <span className="font-mono text-[8px] text-red-400">
-                            {v.threat_count}🔴
+                        {analyzing ? (
+                          <span className="font-mono text-[8px] text-amber-400 animate-pulse">
+                            {getAnalysisLabel(v)}
                           </span>
+                        ) : (
+                          <>
+                            {v.threat_count > 0 && (
+                              <span className="font-mono text-[8px] text-red-400">
+                                {v.threat_count} CRITICAL
+                              </span>
+                            )}
+                            {v.warning_count > 0 && (
+                              <span className="font-mono text-[8px] text-amber-400">
+                                {v.warning_count} WARNING
+                              </span>
+                            )}
+                            <span className="font-mono text-[8px] text-muted-foreground">
+                              {formatDur(v.duration_sec)}
+                            </span>
+                          </>
                         )}
-                        {v.warning_count > 0 && (
-                          <span className="font-mono text-[8px] text-amber-400">
-                            {v.warning_count}🟡
-                          </span>
-                        )}
-                        <span className="font-mono text-[8px] text-muted-foreground">
-                          {formatDur(v.duration_sec)}
-                        </span>
                       </div>
                     </div>
                     <button
@@ -770,7 +956,7 @@ export default function ChatPage() {
                       <X className="w-3 h-3" />
                     </button>
                   </div>
-                ))}
+                );})}
 
                 <button
                   type="button"
@@ -783,7 +969,13 @@ export default function ChatPage() {
 
                 {taggedVideoIds.length === 0 && (
                   <span className="font-mono text-[9px] text-muted-foreground/40 italic ml-1">
-                    No videos tagged — add one to give the analyst context
+                    Tag analysed videos or upload new footage for multi-video intel chat
+                  </span>
+                )}
+
+                {hasAnalyzingTagged && (
+                  <span className="font-mono text-[9px] text-amber-400/80 italic ml-1 shrink-0">
+                    Waiting for analysis to complete…
                   </span>
                 )}
               </div>
@@ -799,17 +991,18 @@ export default function ChatPage() {
                       <p className="font-mono text-sm font-bold text-foreground uppercase tracking-wide">
                         EVE&apos;S EYE INTEL ANALYST
                       </p>
-                      <p className="font-mono text-[10px] text-muted-foreground mt-1 max-w-xs">
-                        Add a video to the context and ask about threats, faces,
-                        specific time periods, or request a visual frame snapshot.
+                      <p className="font-mono text-[10px] text-muted-foreground mt-1 max-w-md">
+                        Tag multiple pre-analysed videos or upload new footage. The analyst
+                        receives each video source file plus its threat/warning timeline.
+                        Use time-period tools or dispatch subagents for deep investigation.
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2 justify-center max-w-sm">
                       {[
-                        "Summarise all threats",
-                        "Who was detected at 0:45?",
-                        "Show me the faces found",
-                        "What happened between 30s and 60s?",
+                        "Summarise all critical threats across videos",
+                        "Assess what happened between 30s and 90s",
+                        "Run a subagent to trace all suspicious activity",
+                        "Compare warning patterns between tagged videos",
                       ].map((q) => (
                         <button
                           type="button"
@@ -851,10 +1044,12 @@ export default function ChatPage() {
                     onKeyDown={handleKeyDown}
                     placeholder={
                       taggedVideoIds.length === 0
-                        ? "Add a video to the context first..."
-                        : "Ask about threats, faces, specific timestamps, or request frame snapshots…"
+                        ? "Add or upload videos to the context first…"
+                        : hasAnalyzingTagged
+                          ? "Waiting for video analysis to finish…"
+                          : "Ask about threats, time periods, dispatch subagents, or request frame snapshots…"
                     }
-                    disabled={isSending || taggedVideoIds.length === 0}
+                    disabled={isSending || !allTaggedReady}
                     rows={1}
                     className="flex-1 resize-none bg-transparent text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none disabled:opacity-50 max-h-32 font-sans leading-relaxed py-1"
                     style={{ fieldSizing: "content" } as React.CSSProperties}
@@ -865,7 +1060,7 @@ export default function ChatPage() {
                     disabled={
                       isSending ||
                       !input.trim() ||
-                      taggedVideoIds.length === 0
+                      !allTaggedReady
                     }
                     className="shrink-0 mb-0.5 flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 font-mono text-[10px] font-bold text-primary-foreground uppercase transition-all hover:bg-primary/80 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                   >
@@ -923,8 +1118,13 @@ export default function ChatPage() {
         <VideoPickerModal
           allVideos={allVideos}
           tagged={taggedVideoIds}
+          uploadPhase={uploadPhase}
           onAdd={addVideo}
-          onClose={() => setShowPicker(false)}
+          onUpload={uploadVideo}
+          onClose={() => {
+            setShowPicker(false);
+            if (uploadPhase !== "uploading") setUploadPhase("idle");
+          }}
         />
       )}
     </div>
