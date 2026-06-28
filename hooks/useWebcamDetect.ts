@@ -47,6 +47,7 @@ export function useWebcamDetect(
 ): UseWebcamDetectResult {
   const maxFps = options?.maxFps ?? DEFAULT_MAX_FPS;
   const minConfidence = options?.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
+  const cameraId = options?.cameraId;
   const minIntervalMs = 1000 / maxFps;
 
   const [detections, setDetections] = useState<readonly Detection[]>([]);
@@ -61,6 +62,7 @@ export function useWebcamDetect(
   const lastRequestTimeRef = useRef<number>(0);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const isActiveRef = useRef<boolean>(isActive);
+  const backoffDelayRef = useRef<number>(0);
 
   useEffect(() => {
     isActiveRef.current = isActive;
@@ -134,8 +136,8 @@ export function useWebcamDetect(
     try {
       const formData = new FormData();
       formData.append("frame", blob);
-      if (options?.cameraId) {
-        formData.append("camera_id", options.cameraId);
+      if (cameraId) {
+        formData.append("camera_id", cameraId);
       }
 
       const res = await fetch("/api/detect", {
@@ -145,19 +147,43 @@ export function useWebcamDetect(
       });
 
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        // Retrieve error message details if available
+        const errText = await res.text();
+        throw new Error(errText || `HTTP ${res.status}: ${res.statusText}`);
       }
 
       const json = await res.json();
 
       if (!json.ok) {
+        const errMsg = json.message || "Detection failed";
+
+        // Handle rate limiting specifically
+        if (
+          errMsg.includes("429") ||
+          errMsg.toLowerCase().includes("too many requests") ||
+          errMsg.toLowerCase().includes("quota")
+        ) {
+          backoffDelayRef.current =
+            backoffDelayRef.current === 0
+              ? 12000
+              : Math.min(60000, backoffDelayRef.current * 2);
+          console.warn(
+            `[useWebcamDetect] Rate limit backoff triggered from server message: ${backoffDelayRef.current}ms`,
+          );
+        } else {
+          backoffDelayRef.current = 5000;
+        }
+
         startTransition(() => {
-          setError(json.message || "Detection failed");
+          setError(errMsg);
           setDetections([]);
           setLastLatency(null);
           setFrameDimensions(null);
         });
       } else {
+        // Reset backoff delay on successful detection
+        backoffDelayRef.current = 0;
+
         const filtered = (json.detections || []).filter(
           (d: Detection) => d.confidence >= minConfidence,
         );
@@ -171,6 +197,24 @@ export function useWebcamDetect(
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return;
       const msg = err instanceof Error ? err.message : "Unknown error";
+
+      // Handle rate limiting specifically on HTTP/network errors
+      if (
+        msg.includes("429") ||
+        msg.toLowerCase().includes("too many requests") ||
+        msg.toLowerCase().includes("quota")
+      ) {
+        backoffDelayRef.current =
+          backoffDelayRef.current === 0
+            ? 12000
+            : Math.min(60000, backoffDelayRef.current * 2);
+        console.warn(
+          `[useWebcamDetect] Rate limit backoff: ${backoffDelayRef.current}ms`,
+        );
+      } else {
+        backoffDelayRef.current = 5000;
+      }
+
       startTransition(() => {
         setError(`Inference failed: ${msg}`);
         setDetections([]);
@@ -182,16 +226,20 @@ export function useWebcamDetect(
       abortControllerRef.current = null;
 
       if (isActiveRef.current) {
-        const delay = Math.max(
-          0,
-          minIntervalMs - (performance.now() - lastRequestTimeRef.current),
-        );
+        const delay =
+          backoffDelayRef.current > 0
+            ? backoffDelayRef.current
+            : Math.max(
+                0,
+                minIntervalMs -
+                  (performance.now() - lastRequestTimeRef.current),
+              );
         timeoutRef.current = setTimeout(() => {
           void processFrame();
         }, delay);
       }
     }
-  }, [videoRef, minIntervalMs, minConfidence, options?.cameraId]);
+  }, [videoRef, minIntervalMs, minConfidence, cameraId]);
 
   useEffect(() => {
     if (!isActive) {

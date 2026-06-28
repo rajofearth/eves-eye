@@ -104,7 +104,7 @@ export default function LiveMonitorPage() {
     error: detectionError,
     frameDimensions,
   } = useWebcamDetect(webcamVideoRef, !!stream, {
-    maxFps: 4,
+    maxFps: 0.15, // Safe rate limiting for cloud APIs (approx 1 request per 6.6 seconds)
     minConfidence: 0.45,
     cameraId: "CAM-01-WEBCAM",
   });
