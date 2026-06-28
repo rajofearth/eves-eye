@@ -106,12 +106,12 @@ function execGetFaceRoster(args: Record<string, unknown>): string {
     appearances: number;
   }[];
 
-  if (rows.length === 0) return `No faces detected in job ${jobId}.`;
+  if (rows.length === 0) return `No people identified in job ${jobId}.`;
 
   return rows
     .map(
       (r) =>
-        `${r.face_id}: first seen at ${r.first_seen}s, appeared in ${r.appearances} frames`,
+        `${r.face_id}: first seen at ${r.first_seen}s, ${r.appearances} frame(s)`,
     )
     .join("\n");
 }
@@ -224,7 +224,7 @@ export const TOOL_LABELS: Record<string, string> = {
   get_threat_window: "THREAT WINDOW",
   get_threats: "THREAT TIMELINE",
   get_time_period_assessment: "PERIOD ASSESSMENT",
-  get_face_roster: "FACE ROSTER",
+  get_face_roster: "PEOPLE ROSTER",
   get_frame_snapshot: "FRAME SNAPSHOT",
   run_video_subagent: "VIDEO SUBAGENT",
 };

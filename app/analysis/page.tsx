@@ -15,6 +15,8 @@ import {
   Upload,
   UserCheck,
   Video,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -59,6 +61,15 @@ interface DBVideoThreat {
   reason: string;
 }
 
+interface DBVideoEvent {
+  id: number;
+  timeSec: number;
+  cls: string;
+  conf: number;
+  note: string;
+  tone: "normal" | "warning" | "critical";
+}
+
 export default function AnalysisPage() {
   const pathname = usePathname();
   const [showToast, setShowToast] = useState<string | null>(null);
@@ -99,12 +110,15 @@ export default function AnalysisPage() {
   const [detections, setDetections] = useState<DBVideoDetection[]>([]);
   const [faces, setFaces] = useState<FaceCrop[]>([]);
   const [threats, setThreats] = useState<DBVideoThreat[]>([]);
+  const [events, setEvents] = useState<DBVideoEvent[]>([]);
   const [vlmSummary, setVlmSummary] = useState<string>("");
   const [totalFrames, setTotalFrames] = useState<number>(0);
   const [completedFrames, setCompletedFrames] = useState<number>(0);
 
   // --- Video Player States ---
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [volume, setVolume] = useState<number>(0.7);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
 
@@ -167,6 +181,27 @@ export default function AnalysisPage() {
     };
   }, [selectedVideoUrl]);
 
+  // Sync volume/mute to video element
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.volume = volume;
+      videoRef.current.muted = isMuted;
+    }
+  }, [volume, isMuted]);
+
+  // Auto-play when frame analysis begins
+  useEffect(() => {
+    if (
+      (uploadPhase === "analyzing" || uploadPhase === "summarizing") &&
+      videoRef.current &&
+      selectedVideoUrl
+    ) {
+      videoRef.current.volume = volume;
+      videoRef.current.muted = isMuted;
+      void videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+    }
+  }, [uploadPhase, selectedVideoUrl, volume, isMuted]);
+
   useEffect(() => {
     const updateClock = () => {
       const d = new Date();
@@ -201,6 +236,7 @@ export default function AnalysisPage() {
           setDetections(data.detections || []);
           setFaces(data.faces || []);
           setThreats(data.threats || []);
+          setEvents(data.events || []);
 
           // Update progress metrics
           if (status === "extracting") {
@@ -324,6 +360,7 @@ export default function AnalysisPage() {
     setDetections([]);
     setFaces([]);
     setThreats([]);
+    setEvents([]);
     setVlmSummary("");
     setIsPlaying(false);
     setCurrentTime(0);
@@ -370,14 +407,17 @@ export default function AnalysisPage() {
       },
       {
         id: "analyzing",
-        label: "VLM Object Scanning (Gemma)",
+        label: "Parallel VLM Analysis",
         icon: <Eye className="w-3.5 h-3.5" />,
         status: isDone("analyzing")
           ? "complete"
-          : isActive("analyzing")
+          : isActive("analyzing") || isActive("summarizing")
             ? "active"
             : "pending",
-        progress: isActive("analyzing") ? pipelineProgress : undefined,
+        progress:
+          isActive("analyzing") || isActive("summarizing")
+            ? pipelineProgress
+            : undefined,
       },
       {
         id: "completed",
@@ -774,10 +814,10 @@ export default function AnalysisPage() {
 
             {/* Custom Video Controls bar */}
             {selectedVideoUrl && (
-              <div className="h-10 border-t border-border bg-muted/30 px-3 flex items-center gap-3 shrink-0">
+              <div className="h-12 border-t border-border bg-muted/30 px-3 flex items-center gap-2 shrink-0">
                 <button
                   onClick={togglePlay}
-                  className="p-1 rounded-sm hover:bg-muted text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm hover:bg-muted text-zinc-300 hover:text-white transition-colors cursor-pointer"
                   type="button"
                   title={isPlaying ? "Pause Feed" : "Play Feed"}
                 >
@@ -788,45 +828,85 @@ export default function AnalysisPage() {
                   )}
                 </button>
 
-                {/* Scrubber timeline */}
-                <div className="flex-1 flex items-center relative h-6 group/timeline">
+                <div className="flex-1 min-w-0 flex items-center">
+                  <div className="relative w-full h-7 flex items-center">
+                    {/* Threat/warning segments track */}
+                    <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 rounded-full bg-border/80 overflow-hidden">
+                      {threats.map((t) => {
+                        const maxTime = duration || 100;
+                        const left = (t.startSec / maxTime) * 100;
+                        const width = ((t.endSec - t.startSec) / maxTime) * 100;
+                        const color =
+                          t.severity === "critical"
+                            ? "bg-red-500/70"
+                            : "bg-amber-500/70";
+
+                        return (
+                          <div
+                            key={t.id}
+                            className={`absolute top-0 h-full ${color}`}
+                            style={{
+                              left: `${left}%`,
+                              width: `${Math.max(width, 0.5)}%`,
+                            }}
+                            title={`${t.severity.toUpperCase()}: ${t.reason}`}
+                          />
+                        );
+                      })}
+                    </div>
+
+                    <input
+                      type="range"
+                      min="0"
+                      max={duration || 100}
+                      step="0.1"
+                      value={currentTime}
+                      onChange={(e) => handleSeek(Number(e.target.value))}
+                      className="relative z-10 w-full h-1.5 appearance-none cursor-pointer bg-transparent focus:outline-none
+                        [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-transparent
+                        [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:shadow-sm
+                        [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent
+                        [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-background"
+                    />
+                  </div>
+                </div>
+
+                <span className="font-mono text-[9px] text-zinc-400 select-none shrink-0 tabular-nums w-[52px] text-right">
+                  {Math.floor(currentTime)}s/{Math.floor(duration)}s
+                </span>
+
+                <div className="flex items-center gap-1.5 shrink-0 border-l border-border/60 pl-2 ml-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsMuted((m) => !m)}
+                    className="flex h-7 w-7 items-center justify-center rounded-sm hover:bg-muted text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                    title={isMuted ? "Unmute" : "Mute"}
+                  >
+                    {isMuted || volume === 0 ? (
+                      <VolumeX className="w-3.5 h-3.5" />
+                    ) : (
+                      <Volume2 className="w-3.5 h-3.5" />
+                    )}
+                  </button>
                   <input
                     type="range"
                     min="0"
-                    max={duration || 100}
-                    step="0.1"
-                    value={currentTime}
-                    onChange={(e) => handleSeek(Number(e.target.value))}
-                    className="w-full h-1 bg-border rounded-lg appearance-none cursor-pointer accent-primary focus:outline-none z-10"
+                    max="1"
+                    step="0.05"
+                    value={isMuted ? 0 : volume}
+                    onChange={(e) => {
+                      const next = Number(e.target.value);
+                      setVolume(next);
+                      if (next > 0) setIsMuted(false);
+                    }}
+                    className="w-[72px] h-1.5 appearance-none cursor-pointer rounded-full bg-border focus:outline-none
+                      [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-border
+                      [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-zinc-300
+                      [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-border
+                      [&::-moz-range-thumb]:h-2.5 [&::-moz-range-thumb]:w-2.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-zinc-300"
+                    title="Volume"
                   />
-
-                  {/* Warning/Threat segments on timeline */}
-                  {threats.map((t) => {
-                    const maxTime = duration || 100;
-                    const left = (t.startSec / maxTime) * 100;
-                    const width = ((t.endSec - t.startSec) / maxTime) * 100;
-                    const color =
-                      t.severity === "critical"
-                        ? "bg-red-500/40"
-                        : "bg-amber-500/40";
-
-                    return (
-                      <div
-                        key={t.id}
-                        className={`absolute h-1 top-[11px] rounded-lg ${color} pointer-events-none`}
-                        style={{
-                          left: `${left}%`,
-                          width: `${width}%`,
-                        }}
-                        title={`${t.severity.toUpperCase()}: ${t.reason}`}
-                      />
-                    );
-                  })}
                 </div>
-
-                <span className="font-mono text-[9px] text-zinc-400 select-none">
-                  {Math.floor(currentTime)}s / {Math.floor(duration)}s
-                </span>
               </div>
             )}
           </div>
@@ -851,11 +931,11 @@ export default function AnalysisPage() {
 
           {/* Bottom row (flex-2) */}
           <div className="flex-2 flex gap-3 overflow-hidden min-h-0">
-            {/* Face Track Cluster Panel */}
+            {/* People in Video Panel */}
             <div className="w-80 bg-card border border-border rounded-md flex flex-col overflow-hidden shrink-0 shadow-xs">
               <div className="h-8 border-b border-border bg-muted/40 px-3 flex items-center justify-between shrink-0">
                 <span className="font-mono text-[9px] text-zinc-300 font-bold uppercase tracking-wider">
-                  Face Track Cluster
+                  People in Video
                 </span>
                 <UserCheck className="w-3.5 h-3.5 text-primary" />
               </div>
@@ -865,34 +945,36 @@ export default function AnalysisPage() {
                   <button
                     key={crop.id}
                     onClick={() => handleSeek(crop.timestampSec)}
-                    className="aspect-square border rounded-md relative flex flex-col items-center justify-center bg-zinc-950/15 border-primary/25 hover:border-primary transition-all cursor-pointer group"
+                    className="group flex flex-col items-center gap-1.5 rounded-md border border-border bg-zinc-950/30 p-2 hover:border-primary/60 transition-all cursor-pointer"
                     type="button"
-                    title={`Jump to frame ${crop.timestampSec}s`}
+                    title={`Jump to ${crop.timestampSec}s — ${crop.faceId}`}
                   >
-                    {/* biome-ignore lint/performance/noImgElement: cropped face image from local sharp output */}
+                    {/* biome-ignore lint/performance/noImgElement: cropped face from sharp output */}
                     <img
                       src={crop.avatarPath}
                       alt={crop.faceId}
-                      className="w-10 h-10 rounded-full border border-primary/10 object-cover"
+                      className="h-16 w-16 rounded-full border-2 border-primary/30 object-cover object-center bg-zinc-900"
                     />
-                    <div className="absolute bottom-0 w-full text-center py-0.5 rounded-b-md font-mono text-[7px] font-bold bg-muted/80 text-zinc-400 border-t border-border/30">
+                    <span className="font-mono text-[7px] font-bold text-zinc-300 uppercase truncate w-full text-center">
                       {crop.faceId}
-                    </div>
+                    </span>
                   </button>
                 ))}
-                {uploadPhase === "analyzing" && (
-                  <div className="aspect-square border rounded-md relative flex flex-col items-center justify-center bg-zinc-950/15 border-amber-500/25 animate-pulse">
+                {uniqueFaceCrops.length === 0 &&
+                  uploadPhase !== "analyzing" &&
+                  uploadPhase !== "summarizing" && (
+                    <div className="col-span-3 text-center py-8 font-mono text-[8px] text-muted-foreground uppercase">
+                      NO_PEOPLE_IDENTIFIED
+                    </div>
+                  )}
+                {(uploadPhase === "analyzing" || uploadPhase === "summarizing") &&
+                  uniqueFaceCrops.length === 0 && (
+                  <div className="col-span-3 flex flex-col items-center justify-center py-6 gap-1 border border-amber-500/25 rounded-md bg-amber-500/5 animate-pulse">
                     <div className="font-mono text-[7px] text-amber-500 font-bold uppercase tracking-wider text-center px-1">
-                      SCANNING...
+                      IDENTIFYING...
                     </div>
                   </div>
                 )}
-                {uniqueFaceCrops.length === 0 &&
-                  uploadPhase !== "analyzing" && (
-                    <div className="col-span-3 text-center py-8 font-mono text-[8px] text-muted-foreground uppercase">
-                      NO_FACES_ARCHIVED
-                    </div>
-                  )}
               </div>
             </div>
 
@@ -925,37 +1007,27 @@ export default function AnalysisPage() {
 
               {/* Table body */}
               <div className="flex-1 overflow-y-auto font-mono text-[9px]">
-                {detections.length === 0 ? (
+                {events.length === 0 ? (
                   <div className="flex h-full items-center justify-center select-none">
                     <span className="font-mono text-[8px] text-muted-foreground/50 uppercase">
-                      AWAITING_PIPELINE_INIT...
+                      {uploadPhase === "analyzing" || uploadPhase === "summarizing"
+                        ? "GENERATING_INTEL_EVENTS..."
+                        : "AWAITING_PIPELINE_INIT..."}
                     </span>
                   </div>
                 ) : (
-                  detections.map((row) => {
+                  events.map((row) => {
                     const isPassed =
-                      currentTime >= row.timestampSec ||
-                      uploadPhase === "completed";
+                      currentTime >= row.timeSec || uploadPhase === "completed";
                     if (!isPassed) return null;
 
-                    // Deduce warning/critical colors based on timeline threats
-                    const matchedThreat = threats.find(
-                      (t) =>
-                        row.timestampSec >= t.startSec &&
-                        row.timestampSec <= t.endSec,
-                    );
-                    const tone =
-                      matchedThreat?.severity === "critical"
-                        ? "critical"
-                        : matchedThreat?.severity === "warning"
-                          ? "warning"
-                          : "normal";
+                    const tone = row.tone;
 
                     return (
                       <button
                         type="button"
                         key={row.id}
-                        onClick={() => handleSeek(row.timestampSec)}
+                        onClick={() => handleSeek(row.timeSec)}
                         className={`grid grid-cols-12 gap-2 px-3 py-1.5 border-b border-border/40 items-center relative transition-colors cursor-pointer w-full text-left font-mono text-[9px] ${
                           tone === "critical"
                             ? "bg-red-950/20 hover:bg-red-950/35 text-red-400"
@@ -965,20 +1037,18 @@ export default function AnalysisPage() {
                         }`}
                       >
                         <div className="col-span-2">
-                          {Math.floor(row.timestampSec)}s
+                          {Math.floor(row.timeSec)}s
                         </div>
                         <div
                           className={`col-span-2 font-bold ${tone === "critical" ? "text-red-500 animate-pulse" : ""}`}
                         >
-                          {row.label}
+                          {row.cls}
                         </div>
                         <div className="col-span-1 text-right text-zinc-400">
-                          {Math.round(row.confidence * 100)}%
+                          {Math.round(row.conf * 100)}%
                         </div>
                         <div className="col-span-7 pl-3 truncate text-zinc-400">
-                          {matchedThreat
-                            ? matchedThreat.reason
-                            : `Object ${row.label.toLowerCase()} detected in media stream.`}
+                          {row.note}
                         </div>
                       </button>
                     );

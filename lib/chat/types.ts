@@ -10,6 +10,7 @@ export interface VideoContext {
   filename: string;
   durationSec: number;
   status: string;
+  summary: string;
   videoUrl: string;
   threats: VideoThreat[];
 }

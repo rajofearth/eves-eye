@@ -41,6 +41,15 @@ interface DBThreatRow {
   reason: string;
 }
 
+interface DBEventRow {
+  id: number;
+  time_sec: number;
+  cls: string;
+  conf: number;
+  note: string;
+  tone: string;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -84,6 +93,12 @@ export async function GET(req: NextRequest) {
       )
       .all(jobId) as DBThreatRow[];
 
+    const events = db
+      .prepare(
+        "SELECT * FROM video_events WHERE job_id = ? ORDER BY time_sec ASC",
+      )
+      .all(jobId) as DBEventRow[];
+
     return NextResponse.json({
       ok: true,
       job: {
@@ -119,6 +134,14 @@ export async function GET(req: NextRequest) {
         endSec: t.end_sec,
         severity: t.severity,
         reason: t.reason,
+      })),
+      events: events.map((e) => ({
+        id: e.id,
+        timeSec: e.time_sec,
+        cls: e.cls,
+        conf: e.conf,
+        note: e.note,
+        tone: e.tone,
       })),
     });
   } catch (err) {

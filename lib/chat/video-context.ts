@@ -3,8 +3,10 @@ import type { VideoContext } from "./types";
 
 export function loadVideoContext(jobId: string): VideoContext | null {
   const job = db
-    .prepare("SELECT filename, status FROM video_jobs WHERE id = ?")
-    .get(jobId) as { filename: string; status: string } | undefined;
+    .prepare("SELECT filename, status, summary FROM video_jobs WHERE id = ?")
+    .get(jobId) as
+    | { filename: string; status: string; summary: string | null }
+    | undefined;
 
   if (!job) return null;
 
@@ -30,6 +32,7 @@ export function loadVideoContext(jobId: string): VideoContext | null {
     filename: job.filename,
     status: job.status,
     durationSec: duration?.dur ?? 0,
+    summary: job.summary ?? "",
     videoUrl: `/uploads/videos/${jobId}/video.mp4`,
     threats: threats.map((t) => ({
       startSec: t.start_sec,
@@ -49,47 +52,38 @@ export function loadVideoContexts(jobIds: string[]): VideoContext[] {
 export const TOOL_SCHEMA = `
 ## AVAILABLE TOOLS
 
-When you need more detail you MAY call ONE tool per response turn by outputting this exact block (no markdown wrapping):
+Call ONE tool per turn using this exact format (no markdown):
 
 <tool_call>{"name":"TOOL_NAME","args":{...}}</tool_call>
 
-Available tools:
+Tools:
 
-1. get_time_window
-   Gets all object detections in a specific time range for deep inspection.
+1. get_time_window — detections in a time range
    Args: { "jobId": string, "startSec": number, "endSec": number }
 
-2. get_threat_window
-   Gets threat/warning timeline entries overlapping a time range.
+2. get_threat_window — threats/warnings overlapping a range
    Args: { "jobId": string, "startSec": number, "endSec": number }
 
-3. get_threats
-   Gets the full threat and warning timeline for a video.
+3. get_threats — full threat timeline
    Args: { "jobId": string }
 
-4. get_time_period_assessment
-   Comprehensive assessment of a time window: overlapping threats, detections, and face roster.
-   Use for thorough situational analysis of a specific period.
+4. get_time_period_assessment — full assessment of a window
    Args: { "jobId": string, "startSec": number, "endSec": number }
 
-5. get_face_roster
-   Gets all unique faces detected in a video.
+5. get_face_roster — unique people identified in video
    Args: { "jobId": string }
 
-6. get_frame_snapshot
-   Visually inspects the actual video frame at a specific moment.
+6. get_frame_snapshot — inspect a specific frame
    Args: { "jobId": string, "timeSec": number }
 
-7. run_video_subagent
-   Dispatches a focused investigation subagent on a pre-analysed video.
-   The subagent receives the full threat timeline, detections in scope, and frame snapshots.
-   Use for complex multi-step analysis tasks on a single video (e.g. "trace person X through the scene",
-   "correlate all critical events", "build incident timeline for 2:00–3:30").
+7. run_video_subagent — dispatch focused investigation subagent
+   Use liberally for complex questions. Run multiple subagents on different videos or time ranges.
    Args: { "jobId": string, "task": string, "startSec"?: number, "endSec"?: number }
 
-After your tool_call block I will send back a <tool_result> block. Then continue your analysis.
-Only call tools when you genuinely need more detail than the context provides.
-Never output markdown code blocks. Be concise, factual, and surveillance-analyst in tone.
+After a tool_call you receive <tool_result>. You MUST then either call another tool OR write your final briefing.
+Never stop with an empty response after a tool/subagent result.
+When fully done, output your complete final intelligence briefing with NO tool_call tags.
+Never use markdown code blocks.
 `;
 
 export function buildSystemPrompt(videos: VideoContext[]): string {
@@ -104,42 +98,33 @@ export function buildSystemPrompt(videos: VideoContext[]): string {
       return `VIDEO: "${v.filename}" (job_id: ${v.jobId})
 Source file: ${v.videoUrl}
 Duration: ${v.durationSec}s
-Status: ${v.status}
+Summary: ${v.summary || "Pending"}
 
 CRITICAL THREATS (${critical.length}):
-${critical.map(formatThreat).join("\n") || "  • None recorded"}
+${critical.map(formatThreat).join("\n") || "  • None"}
 
 WARNINGS (${warnings.length}):
-${warnings.map(formatThreat).join("\n") || "  • None recorded"}`;
+${warnings.map(formatThreat).join("\n") || "  • None"}`;
     })
     .join("\n\n---\n\n");
 
-  return `You are EVE'S EYE Intel Analyst — a sharp, precise AI surveillance analyst embedded in the EVE'S EYE system.
-You have intelligence from ${videos.length} analysed video(s). Each video source file is stored locally and accessible via tools.
+  return `You are EVE'S EYE Lead Intelligence Analyst — an expert surveillance investigator.
 
-Your initial context includes ONLY the threat and warning timeline for each video — not raw detections or summaries.
-Use tools to drill into specific time periods, inspect frames visually, or dispatch subagents for deep investigation.
+YOUR ROLE:
+- ANALYSE: Deeply examine all video evidence attached to this conversation
+- SEARCH: Use tools to inspect any time period, frame, or threat window
+- EXPLORE: Cross-reference multiple videos; follow leads wherever they go
+- DELEGATE: Dispatch run_video_subagent liberally — use multiple subagents on different videos, time ranges, or hypotheses in parallel across turns
+- PERSIST: Take as many tool/subagent turns as needed for the best possible answer. Never settle for a shallow response.
+
+You have ${videos.length} video(s). Key frames from each source video are attached visually — treat them as direct footage access alongside the full video files on disk.
 
 ${videoContexts}
 
 ${TOOL_SCHEMA}
 
-Always cite which video you're referring to by filename.
-When comparing multiple videos, cross-reference timestamps and threat patterns explicitly.
-Respond in the terse, factual tone of a security intelligence report.`;
+Cite videos by filename. Be thorough, precise, and intelligence-report in tone.
+After subagents or tools return, always synthesize findings into a final answer — never leave the analyst with only raw tool output.`;
 }
 
-export function parseToolCall(text: string): import("./types").ToolCall | null {
-  const match = text.match(/<tool_call>([\s\S]*?)<\/tool_call>/);
-  if (!match) return null;
-  try {
-    const parsed = JSON.parse(match[1].trim()) as {
-      name: string;
-      args: Record<string, unknown>;
-    };
-    if (parsed.name && parsed.args) return parsed;
-    return null;
-  } catch {
-    return null;
-  }
-}
+export { parseToolCall } from "./agent-loop";

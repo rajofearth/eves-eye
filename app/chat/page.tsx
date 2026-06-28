@@ -96,7 +96,7 @@ const toolLabel: Record<string, string> = {
   get_threat_window: "THREAT WINDOW",
   get_threats: "THREAT TIMELINE",
   get_time_period_assessment: "PERIOD ASSESSMENT",
-  get_face_roster: "FACE ROSTER",
+  get_face_roster: "PEOPLE ROSTER",
   get_frame_snapshot: "FRAME SNAPSHOT",
   run_video_subagent: "VIDEO SUBAGENT",
 };
@@ -854,10 +854,14 @@ export default function ChatPage() {
               </div>
             ) : (
               sessions.map((s) => (
-                <button
-                  type="button"
+                <div
                   key={s.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => openSession(s.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") openSession(s.id);
+                  }}
                   className={`group w-full flex flex-col gap-0.5 px-3 py-2 text-left transition-colors cursor-pointer ${
                     activeSessionId === s.id
                       ? "bg-primary/10 border-r-2 border-primary"
@@ -876,7 +880,10 @@ export default function ChatPage() {
                     </span>
                     <button
                       type="button"
-                      onClick={(e) => deleteSession(s.id, e)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteSession(s.id, e);
+                      }}
                       className="opacity-0 group-hover:opacity-100 shrink-0 p-0.5 rounded hover:text-red-400 text-muted-foreground transition-all cursor-pointer"
                     >
                       <Trash2 className="w-2.5 h-2.5" />
@@ -892,7 +899,7 @@ export default function ChatPage() {
                       </span>
                     )}
                   </div>
-                </button>
+                </div>
               ))
             )}
           </div>

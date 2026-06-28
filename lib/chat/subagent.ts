@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Cerebras } from "@cerebras/cerebras_cloud_sdk";
 import { db } from "@/lib/db";
+import { MAX_IMAGES_PER_REQUEST } from "@/lib/vlm/cerebras-client";
 import { loadVideoContext } from "./video-context";
 import type { ToolResult } from "./types";
 
@@ -52,7 +53,7 @@ function pickSnapshotTimes(
     }
   }
 
-  return [...times].sort((a, b) => a - b).slice(0, 5);
+  return [...times].sort((a, b) => a - b).slice(0, MAX_IMAGES_PER_REQUEST);
 }
 
 export async function runVideoSubagent(

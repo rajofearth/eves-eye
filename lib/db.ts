@@ -83,6 +83,16 @@ db.exec(`
     reason TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS video_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    time_sec REAL NOT NULL,
+    cls TEXT NOT NULL,
+    conf REAL NOT NULL,
+    note TEXT NOT NULL,
+    tone TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS chat_sessions (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,

@@ -1,9 +1,22 @@
 import { db } from "@/lib/db";
 import {
+  appendToolExchange,
+  buildEmptyResponseNudge,
+  buildForcedSynthesisPrompt,
+  isSubstantiveFinal,
+  MAX_AGENT_ITERATIONS,
+  parseToolCall,
+  stripToolCalls,
+  type AgentMessage,
+} from "@/lib/chat/agent-loop";
+import {
   buildSystemPrompt,
   loadVideoContexts,
-  parseToolCall,
 } from "@/lib/chat/video-context";
+import {
+  buildVideoAttachments,
+  chunkVisionParts,
+} from "@/lib/chat/video-attachment";
 import { executeTool } from "@/lib/chat/tools";
 import type { ToolCall } from "@/lib/chat/types";
 import { Cerebras } from "@cerebras/cerebras_cloud_sdk";
@@ -19,6 +32,33 @@ function sse(ctrl: ReadableStreamDefaultController, data: unknown) {
   ctrl.enqueue(
     new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`),
   );
+}
+
+async function callGemma(
+  client: Cerebras,
+  messages: AgentMessage[],
+): Promise<string> {
+  const response = await client.chat.completions.create({
+    model: "gemma-4-31b",
+    messages: messages as Parameters<
+      typeof client.chat.completions.create
+    >[0]["messages"],
+  });
+  return (
+    (response as unknown as CerebrasResponse).choices?.[0]?.message
+      ?.content ?? ""
+  );
+}
+
+async function streamFinalText(
+  controller: ReadableStreamDefaultController,
+  text: string,
+): Promise<void> {
+  const chunkSize = 6;
+  for (let i = 0; i < text.length; i += chunkSize) {
+    sse(controller, { type: "text", delta: text.slice(i, i + chunkSize) });
+    await new Promise((r) => setTimeout(r, 0));
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -51,6 +91,8 @@ export async function POST(req: NextRequest) {
     async start(controller) {
       try {
         const videos = loadVideoContexts(videoJobIds);
+        const videoAttachmentParts = await buildVideoAttachments(videos);
+        const attachmentChunks = chunkVisionParts(videoAttachmentParts);
 
         const history = db
           .prepare(
@@ -66,17 +108,33 @@ export async function POST(req: NextRequest) {
           apiKey: process.env.CEREBRAS_API_KEY,
         });
 
-        const systemPrompt = buildSystemPrompt(videos);
+        const evidenceMessages: AgentMessage[] = [];
+        for (let i = 0; i < attachmentChunks.length; i++) {
+          const chunk = attachmentChunks[i]!;
+          const isLast = i === attachmentChunks.length - 1;
+          evidenceMessages.push({
+            role: "user",
+            content: [
+              ...chunk,
+              {
+                type: "text",
+                text: isLast
+                  ? "Above are key visual frames from tagged videos. Use tools and subagents for deeper investigation."
+                  : `Video evidence batch ${i + 1}/${attachmentChunks.length}. More frames follow.`,
+              },
+            ],
+          });
+          evidenceMessages.push({
+            role: "assistant",
+            content: isLast
+              ? "All video evidence received. I will analyse, search, and deploy subagents as needed."
+              : `Batch ${i + 1} received. Standing by for remaining frames.`,
+          });
+        }
 
-        type GemmaMessage = {
-          role: "system" | "user" | "assistant";
-          content:
-            | string
-            | { type: string; text?: string; image_url?: { url: string } }[];
-        };
-
-        const messages: GemmaMessage[] = [
-          { role: "system", content: systemPrompt },
+        const messages: AgentMessage[] = [
+          { role: "system", content: buildSystemPrompt(videos) },
+          ...evidenceMessages,
           ...history.map((h) => ({
             role: h.role as "user" | "assistant",
             content: h.content,
@@ -87,73 +145,70 @@ export async function POST(req: NextRequest) {
         const toolLog: { call: ToolCall; result: string }[] = [];
         let assistantFullText = "";
 
-        for (let iteration = 0; iteration < 6; iteration++) {
-          const response = await client.chat.completions.create({
-            model: "gemma-4-31b",
-            messages: messages as Parameters<
-              typeof client.chat.completions.create
-            >[0]["messages"],
-          });
-
-          const raw =
-            (response as unknown as CerebrasResponse).choices?.[0]?.message
-              ?.content ?? "";
-
+        for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration++) {
+          const raw = await callGemma(client, messages);
           const toolCall = parseToolCall(raw);
 
-          if (!toolCall) {
-            const cleanText = raw
-              .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
-              .trim();
-            assistantFullText = cleanText;
+          if (toolCall) {
+            sse(controller, { type: "tool_call", call: toolCall });
 
-            const chunkSize = 6;
-            for (let i = 0; i < cleanText.length; i += chunkSize) {
-              sse(controller, {
-                type: "text",
-                delta: cleanText.slice(i, i + chunkSize),
-              });
-              await new Promise((r) => setTimeout(r, 0));
-            }
-            break;
+            const toolResult = await executeTool(toolCall);
+            toolLog.push({ call: toolCall, result: toolResult.text });
+
+            sse(controller, {
+              type: "tool_result",
+              call: toolCall,
+              result: toolResult.text,
+              imageBase64: toolResult.imageBase64,
+              mimeType: toolResult.mimeType,
+            });
+
+            appendToolExchange(
+              messages,
+              raw,
+              toolResult,
+              toolCall.name,
+            );
+            continue;
           }
 
-          sse(controller, { type: "tool_call", call: toolCall });
+          const cleanText = stripToolCalls(raw);
 
-          const toolResult = await executeTool(toolCall);
-          toolLog.push({ call: toolCall, result: toolResult.text });
+          // Empty or too-short response after tools — nudge and continue loop
+          if (
+            toolLog.length > 0 &&
+            !isSubstantiveFinal(cleanText) &&
+            iteration < MAX_AGENT_ITERATIONS - 1
+          ) {
+            messages.push({
+              role: "assistant",
+              content: raw || "(no output)",
+            });
+            messages.push({
+              role: "user",
+              content: buildEmptyResponseNudge(),
+            });
+            continue;
+          }
 
-          sse(controller, {
-            type: "tool_result",
-            call: toolCall,
-            result: toolResult.text,
-            imageBase64: toolResult.imageBase64,
-            mimeType: toolResult.mimeType,
+          // Final answer
+          assistantFullText = cleanText;
+          if (assistantFullText) {
+            await streamFinalText(controller, assistantFullText);
+          }
+          break;
+        }
+
+        // Ran tools but never got a final briefing — force synthesis pass
+        if (!assistantFullText && toolLog.length > 0) {
+          messages.push({
+            role: "user",
+            content: buildForcedSynthesisPrompt(),
           });
-
-          messages.push({ role: "assistant", content: raw });
-
-          if (toolResult.imageBase64) {
-            messages.push({
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: `<tool_result>${toolResult.text}</tool_result>`,
-                },
-                {
-                  type: "image_url",
-                  image_url: {
-                    url: `data:${toolResult.mimeType};base64,${toolResult.imageBase64}`,
-                  },
-                },
-              ],
-            });
-          } else {
-            messages.push({
-              role: "user",
-              content: `<tool_result>${toolResult.text}</tool_result>`,
-            });
+          const synthesis = stripToolCalls(await callGemma(client, messages));
+          assistantFullText = synthesis || toolLog.at(-1)?.result || "";
+          if (assistantFullText) {
+            await streamFinalText(controller, assistantFullText);
           }
         }
 
