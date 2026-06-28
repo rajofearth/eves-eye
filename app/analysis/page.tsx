@@ -112,8 +112,61 @@ export default function AnalysisPage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
 
-  // --- UTC Clock ---
+  // Tracks the exact rendered area of the video element inside its container
+  // (accounts for object-contain letterbox/pillarbox offsets)
+  const [videoRect, setVideoRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
+
+  // --- Compute letterbox-corrected video rect ---
+  // The <video> uses object-contain so the actual rendered pixels don't fill the
+  // whole container when aspect ratios differ. We need to know the true video rect
+  // so bounding boxes align with visible pixels.
+  useEffect(() => {
+    const container = videoContainerRef.current;
+    const video = videoRef.current;
+    if (!container || !video) return;
+
+    const compute = () => {
+      const cW = container.clientWidth;
+      const cH = container.clientHeight;
+      const vW = video.videoWidth || 16;
+      const vH = video.videoHeight || 9;
+      const containerAR = cW / cH;
+      const videoAR = vW / vH;
+
+      let renderW: number;
+      let renderH: number;
+      if (videoAR > containerAR) {
+        // Letterboxed (bars on top/bottom)
+        renderW = cW;
+        renderH = cW / videoAR;
+      } else {
+        // Pillarboxed (bars on left/right)
+        renderH = cH;
+        renderW = cH * videoAR;
+      }
+
+      setVideoRect({
+        left: (cW - renderW) / 2,
+        top: (cH - renderH) / 2,
+        width: renderW,
+        height: renderH,
+      });
+    };
+
+    const ro = new ResizeObserver(compute);
+    ro.observe(container);
+
+    video.addEventListener("loadedmetadata", compute);
+    compute();
+
+    return () => {
+      ro.disconnect();
+      video.removeEventListener("loadedmetadata", compute);
+    };
+  }, [selectedVideoUrl]);
+
   useEffect(() => {
     const updateClock = () => {
       const d = new Date();
@@ -614,33 +667,48 @@ export default function AnalysisPage() {
             </div>
 
             {/* Video Screen Container */}
-            <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden">
+            <div
+              ref={videoContainerRef}
+              className="flex-1 bg-black relative flex items-center justify-center overflow-hidden"
+            >
               {selectedVideoUrl ? (
                 <>
-                  {/* Bounding box highlights */}
-                  {activeDetections.map((det) => {
-                    const left = det.x1 / 10;
-                    const top = det.y1 / 10;
-                    const width = (det.x2 - det.x1) / 10;
-                    const height = (det.y2 - det.y1) / 10;
+                  {/* Bounding box overlay — positioned over the actual rendered
+                      video pixels, not the entire black container */}
+                  <div
+                    className="absolute pointer-events-none z-10"
+                    style={{
+                      left: videoRect.left,
+                      top: videoRect.top,
+                      width: videoRect.width,
+                      height: videoRect.height,
+                    }}
+                  >
+                    {activeDetections.map((det) => {
+                      // Coordinates from SQLite are stored as 0-1000 normalised values
+                      const left = det.x1 / 10;
+                      const top = det.y1 / 10;
+                      const width = (det.x2 - det.x1) / 10;
+                      const height = (det.y2 - det.y1) / 10;
 
-                    return (
-                      <div
-                        key={det.id}
-                        className="absolute border-2 border-primary bg-primary/5 rounded-xs pointer-events-none transition-all duration-100 z-10"
-                        style={{
-                          left: `${left}%`,
-                          top: `${top}%`,
-                          width: `${width}%`,
-                          height: `${height}%`,
-                        }}
-                      >
-                        <div className="absolute top-0 left-0 bg-primary px-1.5 py-0.5 text-primary-foreground font-mono text-[8px] font-bold uppercase tracking-wider translate-y-[-100%] rounded-t-xs">
-                          {det.label} {Math.round(det.confidence * 100)}%
+                      return (
+                        <div
+                          key={det.id}
+                          className="absolute border-2 border-primary bg-primary/5 rounded-xs pointer-events-none transition-all duration-100"
+                          style={{
+                            left: `${left}%`,
+                            top: `${top}%`,
+                            width: `${width}%`,
+                            height: `${height}%`,
+                          }}
+                        >
+                          <div className="absolute top-0 left-0 bg-primary px-1.5 py-0.5 text-primary-foreground font-mono text-[8px] font-bold uppercase tracking-wider translate-y-[-100%] rounded-t-xs">
+                            {det.label} {Math.round(det.confidence * 100)}%
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
 
                   {/* HTML5 Video element */}
                   {/* biome-ignore lint/a11y/useMediaCaption: Mock internal overlay handles audio output visually */}

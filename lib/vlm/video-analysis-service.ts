@@ -136,16 +136,58 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
     };
   }
 
+
   /**
-   * Crop face from a frame image and use Gemma to agentically match it against existing unique faces
+   * Compute a 16×16 grayscale thumbnail fingerprint for a face image.
+   * 256 values (0-255) capture enough spatial info to distinguish people
+   * without being sensitive to minor lighting or angle changes.
+   */
+  private async computeFaceFingerprint(imagePath: string): Promise<number[]> {
+    const { data } = await sharp(imagePath)
+      .resize(16, 16, { fit: "fill" })
+      .grayscale()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    return Array.from(data);
+  }
+
+  /**
+   * Mean squared error between two fingerprints.
+   * Lower = more similar faces.
+   * Typical same-person range: 200-1400 (lighting/angle variation)
+   * Different people: usually > 1800
+   */
+  private fingerprintMSE(a: number[], b: number[]): number {
+    let sum = 0;
+    for (let i = 0; i < a.length; i++) {
+      const d = (a[i] ?? 0) - (b[i] ?? 0);
+      sum += d * d;
+    }
+    return sum / a.length;
+  }
+
+  /**
+   * Crop a face from a frame, compute its perceptual fingerprint, and
+   * compare against ALL known unique faces using pixel-level MSE.
+   * No Gemma call needed — fast, reliable, works across all frames.
    */
   async processFaceCrop(
     framePath: string,
     jobId: string,
     frameIndex: number,
     faceBox: [number, number, number, number],
-    uniqueFaces: { faceId: string; avatarPath: string; diskPath: string }[],
-  ): Promise<{ faceId: string; avatarPath: string; diskPath: string } | null> {
+    uniqueFaces: {
+      faceId: string;
+      avatarPath: string;
+      diskPath: string;
+      fingerprint: number[];
+    }[],
+  ): Promise<{
+    faceId: string;
+    avatarPath: string;
+    diskPath: string;
+    fingerprint: number[];
+  } | null> {
     const metadata = await sharp(framePath).metadata();
     const width = metadata.width || 1280;
     const height = metadata.height || 720;
@@ -165,13 +207,18 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
       Math.min(height - 1, Math.round((ymin / 1000) * height)),
     );
     const extractWidth = Math.max(
-      10,
+      1,
       Math.min(width - left, Math.round(((xmax - xmin) / 1000) * width)),
     );
     const extractHeight = Math.max(
-      10,
+      1,
       Math.min(height - top, Math.round(((ymax - ymin) / 1000) * height)),
     );
+
+    // Skip faces that are too small to be reliable (< 30px in either dimension)
+    if (extractWidth < 30 || extractHeight < 30) {
+      return null;
+    }
 
     const faceFilename = `face_${frameIndex}_${Date.now()}.jpg`;
     const facesDir = join(
@@ -184,7 +231,7 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
     );
     const faceOutputPath = join(facesDir, faceFilename);
 
-    // Crop face
+    // Crop and save face
     await sharp(framePath)
       .extract({ left, top, width: extractWidth, height: extractHeight })
       .resize(128, 128)
@@ -193,81 +240,40 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
     const avatarPath = `/uploads/videos/${jobId}/faces/${faceFilename}`;
     const diskPath = faceOutputPath;
 
-    // If there are no unique faces in portfolio, this is automatically Face #1 (UID-1)
+    // Compute perceptual fingerprint from the saved crop
+    const fingerprint = await this.computeFaceFingerprint(faceOutputPath);
+
+    // If portfolio is empty this is automatically UID-1
     if (uniqueFaces.length === 0) {
-      return { faceId: "UID-1", avatarPath, diskPath };
+      return { faceId: "UID-1", avatarPath, diskPath, fingerprint };
     }
 
-    // Call Gemma to match the face crop against the portfolio
-    // For simplicity, we load the base64 of the new crop and up to 3 unique faces to run comparison
-    const client = this.getClient();
-    const newCropBuffer = await readFile(faceOutputPath);
-    const newCropBase64 = newCropBuffer.toString("base64");
+    // Compare against every known unique face — MSE threshold 1500
+    // (same person same/different angle ≈ 200-1400; different person ≈ 1800+)
+    const MATCH_THRESHOLD = 1500;
+    let bestMatch: string | null = null;
+    let bestMSE = Number.POSITIVE_INFINITY;
 
-    const previousFacesContent = [];
-    for (let i = 0; i < Math.min(uniqueFaces.length, 3); i++) {
-      const uFace = uniqueFaces[i];
-      const uBuffer = await readFile(uFace.diskPath);
-      previousFacesContent.push({
-        type: "text" as const,
-        text: `Previous Face ${uFace.faceId}:`,
-      });
-      previousFacesContent.push({
-        type: "image_url" as const,
-        image_url: {
-          url: `data:image/jpeg;base64,${uBuffer.toString("base64")}`,
-        },
-      });
-    }
-
-    const prompt = `Compare the new face image (New Face) against the list of previously identified unique faces.
-Is New Face a match to any of the previous faces, or is it a completely new person?
-Return matching JSON structure:
-{
-  "match": "UID-X" | null,
-  "isUnique": true | false
-}
-Do not write markdown wraps. Return ONLY the raw JSON string.`;
-
-    const response = await client.chat.completions.create({
-      model: "gemma-4-31b",
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            {
-              type: "text",
-              text: "New Face to compare:",
-            },
-            {
-              type: "image_url",
-              image_url: {
-                url: `data:image/jpeg;base64,${newCropBase64}`,
-              },
-            },
-            ...previousFacesContent,
-          ],
-        },
-      ],
-      response_format: { type: "json_object" },
-    });
-
-    const content = (response as unknown as CerebrasResponse).choices?.[0]
-      ?.message?.content;
-    if (!content) {
-      return { faceId: `UID-${uniqueFaces.length + 1}`, avatarPath, diskPath };
-    }
-
-    try {
-      const matchResult = JSON.parse(content);
-      if (matchResult.match) {
-        return { faceId: matchResult.match, avatarPath, diskPath };
+    for (const known of uniqueFaces) {
+      const mse = this.fingerprintMSE(fingerprint, known.fingerprint);
+      if (mse < bestMSE) {
+        bestMSE = mse;
+        bestMatch = known.faceId;
       }
-      return { faceId: `UID-${uniqueFaces.length + 1}`, avatarPath, diskPath };
-    } catch {
-      return { faceId: `UID-${uniqueFaces.length + 1}`, avatarPath, diskPath };
     }
+
+    if (bestMatch !== null && bestMSE < MATCH_THRESHOLD) {
+      // Matched an existing face — return its ID but discard this crop
+      return { faceId: bestMatch, avatarPath, diskPath, fingerprint };
+    }
+
+    // New unique face
+    return {
+      faceId: `UID-${uniqueFaces.length + 1}`,
+      avatarPath,
+      diskPath,
+      fingerprint,
+    };
   }
 
   /**
@@ -438,6 +444,7 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
         faceId: string;
         avatarPath: string;
         diskPath: string;
+        fingerprint: number[];
       }[] = [];
 
       const sortedFaceFrames = [...faceBoxesPerFrame.entries()].sort(
@@ -460,9 +467,9 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
             uniqueFaces,
           );
           if (result) {
-            const { faceId, avatarPath, diskPath } = result;
+            const { faceId, avatarPath, diskPath, fingerprint } = result;
             if (!uniqueFaces.some((uf) => uf.faceId === faceId)) {
-              uniqueFaces.push({ faceId, avatarPath, diskPath });
+              uniqueFaces.push({ faceId, avatarPath, diskPath, fingerprint });
             }
             db.prepare(`
               INSERT INTO video_faces
