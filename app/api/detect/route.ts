@@ -4,11 +4,9 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import sharp from "sharp";
 import { logDetections, logThreat } from "@/lib/db";
+import { vlmThreatAnalyzer } from "@/lib/vlm/vlm-analyzer";
 
 export const runtime = "nodejs";
-
-const clamp = (v: number, min: number, max: number) =>
-  Math.max(min, Math.min(max, v));
 
 export async function POST(req: NextRequest): Promise<Response> {
   const startTime = performance.now();
@@ -82,120 +80,20 @@ export async function POST(req: NextRequest): Promise<Response> {
       );
     }
 
-    // Determine correct MIME type
     const mimeType = metadata.format === "png" ? "image/png" : "image/jpeg";
-    const base64Image = buffer.toString("base64");
 
-    // 5. Construct multimodal prompt for Gemma 4 31B (incorporating threat assessment and object detection)
-    const prompt = `Analyze this frame from a surveillance camera (ID: ${cameraId}). 
-Tasks:
-1. Detect all objects, people, items, or actions of interest. Determine their bounding box coordinates [ymin, xmin, ymax, xmax] normalized on a scale of 0 to 1000 (where 0 is top/left and 1000 is bottom/right). Use natural free-style labels (e.g. "person in jacket", "keyboard", "fire", "crowbar").
-2. Assess whether there is any active threat or emergency occurring (e.g. weapons, physical violence, fire, medical distress). Return "isHarm" true if a threat is verified. Set "severity" to "critical" (for immediate dangers/weapons/violence), "warning" (for suspicious objects/actions), or "nominal" (no threat). Provide a concise "reason" detailing your assessment.
-
-Return the results as a JSON object matching this exact structure:
-{
-  "detections": [
-    {
-      "box_2d": [ymin, xmin, ymax, xmax],
-      "label": "crowbar"
-    }
-  ],
-  "threat": {
-    "isHarm": false,
-    "severity": "nominal",
-    "reason": "The scene shows a person working at a desk with ordinary office equipment."
-  }
-}
-Do not write any markdown code block wraps. Return ONLY the raw JSON string.`;
-
-    // 6. Execute Cerebras Multimodal API request
-    const response = await fetch(
-      "https://api.cerebras.ai/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: "gemma-4-31b",
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: prompt },
-                {
-                  type: "image_url",
-                  image_url: {
-                    url: `data:${mimeType};base64,${base64Image}`,
-                  },
-                },
-              ],
-            },
-          ],
-          response_format: { type: "json_object" },
-        }),
-      },
+    // 5. Delegate frame evaluation to VlmThreatAnalyzer Seam
+    const analysis = await vlmThreatAnalyzer.analyzeFrame(
+      buffer,
+      mimeType,
+      cameraId,
+      origWidth,
+      origHeight,
     );
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(
-        errText || `Cerebras API returned HTTP ${response.status}: ${errText}`,
-      );
-    }
-
-    const resultJson = await response.json();
-    const content = resultJson.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new Error("Cerebras API returned an empty completion content");
-    }
-
-    // 7. Parse model outputs
-    const parsedModelOutput = JSON.parse(content);
-    const rawDetections = parsedModelOutput.detections || [];
-    const threatObj = parsedModelOutput.threat || {
-      isHarm: false,
-      severity: "nominal",
-      reason: "No threat identified.",
-    };
-
-    const detections = [];
-
-    for (const d of rawDetections) {
-      const box = d.box_2d;
-      if (!Array.isArray(box) || box.length !== 4) continue;
-
-      const ymin = Number(box[0]);
-      const xmin = Number(box[1]);
-      const ymax = Number(box[2]);
-      const xmax = Number(box[3]);
-
-      if ([ymin, xmin, ymax, xmax].some(Number.isNaN)) continue;
-
-      // Map normalized 0-1000 coordinates to absolute pixels
-      const x1 = clamp((xmin / 1000) * origWidth, 0, origWidth);
-      const y1 = clamp((ymin / 1000) * origHeight, 0, origHeight);
-      const x2 = clamp((xmax / 1000) * origWidth, 0, origWidth);
-      const y2 = clamp((ymax / 1000) * origHeight, 0, origHeight);
-
-      if (x2 > x1 && y2 > y1) {
-        detections.push({
-          x1,
-          y1,
-          x2,
-          y2,
-          confidence: 1.0,
-          class: 0,
-          label: (d.label || "object").toUpperCase(),
-          model: "gemma",
-        });
-      }
-    }
-
-    // 8. Handle threat snapshot local image save on active threat
+    // 6. Handle threat snapshot local image save on active threat
     let snapshotPath: string | undefined;
-    if (threatObj.isHarm) {
+    if (analysis.threat.isHarm) {
       try {
         const threatsDir = join(process.cwd(), "public", "threats");
         await fs.mkdir(threatsDir, { recursive: true });
@@ -214,16 +112,16 @@ Do not write any markdown code block wraps. Return ONLY the raw JSON string.`;
       }
     }
 
-    // 9. Log everything to SQLite database locally
+    // 7. Log everything to SQLite database locally
     try {
-      if (detections.length > 0) {
-        logDetections(cameraId, detections);
+      if (analysis.detections.length > 0) {
+        logDetections(cameraId, analysis.detections);
       }
       logThreat(cameraId, {
-        isHarm: !!threatObj.isHarm,
-        severity: threatObj.severity || "nominal",
-        reason: threatObj.reason || "No threat identified.",
-        rawJson: content,
+        isHarm: analysis.threat.isHarm,
+        severity: analysis.threat.severity,
+        reason: analysis.threat.reason,
+        rawJson: analysis.rawJson,
         snapshotPath,
       });
     } catch (dbError) {
@@ -235,12 +133,12 @@ Do not write any markdown code block wraps. Return ONLY the raw JSON string.`;
     return NextResponse.json({
       ok: true,
       requestId,
-      detections: detections.slice(0, 50),
+      detections: analysis.detections.slice(0, 50),
       frame: { width: origWidth, height: origHeight },
       threat: {
-        isHarm: !!threatObj.isHarm,
-        severity: threatObj.severity || "nominal",
-        reason: threatObj.reason || "No threat identified.",
+        isHarm: analysis.threat.isHarm,
+        severity: analysis.threat.severity,
+        reason: analysis.threat.reason,
         snapshotPath,
       },
       meta: { latencyMs },

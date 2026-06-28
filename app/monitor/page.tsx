@@ -1,31 +1,19 @@
 "use client";
 
-import {
-  Activity,
-  AlertTriangle,
-  Clock,
-  Cpu,
-  Database,
-  History,
-  Layers,
-  Maximize2,
-  Moon,
-  RefreshCw,
-  Shield,
-  Sparkles,
-  Sun,
-  Terminal,
-  X,
-} from "lucide-react";
-import type * as React from "react";
+import { Activity, Layers, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CameraSurface } from "@/components/camera/camera-surface";
-import { ConfidenceBar } from "@/components/ui/confidence-bar";
-import { IntelLog, IntelLogEntry, IntelTag } from "@/components/ui/intel-log";
+import type { LogEntry } from "@/components/monitor/intel-log-stream";
+import { IntelLogStream } from "@/components/monitor/intel-log-stream";
+// Modular architectural sub-components
+import { MonitorHeader } from "@/components/monitor/monitor-header";
+import { StatsPanel } from "@/components/monitor/stats-panel";
+import { ThreatAlertCard } from "@/components/monitor/threat-alert-card";
+import type { SQLiteThreatLog } from "@/components/monitor/threats-drawer";
+import { ThreatsDrawer } from "@/components/monitor/threats-drawer";
+import { IntelTag } from "@/components/ui/intel-log";
 import { MonoLabel } from "@/components/ui/mono-label";
-import { StatusDot, StatusIndicator } from "@/components/ui/status-dot";
 import { useWebcamDetect } from "@/hooks/useWebcamDetect";
-import { cocoClassName } from "@/lib/coco";
 
 // ---------------------------------------------------------------------------
 // Constants & Types
@@ -35,24 +23,6 @@ interface MockCamera {
   name: string;
   cameraId: string;
   sourceType: "device" | "simulated";
-}
-
-interface LogEntry {
-  id: string;
-  timestamp: string;
-  source: string;
-  message: React.ReactNode;
-  dimmed?: boolean;
-}
-
-interface SQLiteThreatLog {
-  id: number;
-  timestamp: string;
-  camera_id: string;
-  is_harm: number;
-  severity: string;
-  reason: string;
-  snapshot_path: string | null;
 }
 
 const MAX_LOG_ENTRIES = 50;
@@ -290,9 +260,7 @@ export default function LiveMonitorPage() {
     if (!stream || detections.length === 0) return;
 
     // Group classes to prevent duplicate print triggers on consecutive identical frames
-    const classesSet = new Set(
-      detections.map((d) => d.label || cocoClassName(d.class)),
-    );
+    const classesSet = new Set(detections.map((d) => d.label || "OBJECT"));
     const classesStr = Array.from(classesSet).sort().join(",");
 
     if (classesStr !== lastLoggedClasses) {
@@ -314,7 +282,7 @@ export default function LiveMonitorPage() {
                   key={`log-item-${index}-${d.class}-${d.confidence}-${d.label || ""}`}
                 >
                   {index > 0 && ", "}
-                  <IntelTag>{d.label || cocoClassName(d.class)}</IntelTag> (
+                  <IntelTag>{d.label || "OBJECT"}</IntelTag> (
                   {Math.round(d.confidence * 100)}%)
                 </span>
               ))}
@@ -327,7 +295,7 @@ export default function LiveMonitorPage() {
       setSessionTotals((prev) => {
         const next = new Map(prev);
         for (const d of detections) {
-          const label = d.label || cocoClassName(d.class);
+          const label = d.label || "OBJECT";
           next.set(label, (next.get(label) ?? 0) + 1);
         }
         return next;
@@ -436,76 +404,19 @@ export default function LiveMonitorPage() {
     return [...sessionTotals.entries()].sort((a, b) => b[1] - a[1]);
   }, [sessionTotals]);
 
-  const isPrimaryPulsing = threat?.isHarm && !threatAcknowledged;
+  const isPrimaryPulsing = !!(threat?.isHarm && !threatAcknowledged);
 
   return (
     <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-background font-sans text-foreground transition-colors duration-300">
       {/* ── HEADER PANEL ── */}
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card/45 backdrop-blur-md px-4 py-1.5 z-20">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 bg-primary/10 rounded-sm px-2 py-0.5 border border-primary/20">
-            <Shield className="w-4 h-4 text-primary" />
-            <span className="font-heading text-xs font-semibold uppercase tracking-wider text-primary font-bold">
-              EVE&apos;S EYE
-            </span>
-          </div>
-
-          {isPrimaryPulsing ? (
-            <div className="inline-flex items-center gap-1.5 rounded-sm border border-red-500/30 bg-red-950/20 px-2 py-0.5 font-mono text-[10px] font-bold text-red-500 animate-pulse">
-              <AlertTriangle className="w-3.5 h-3.5" />
-              THREAT ACTIVE
-            </div>
-          ) : (
-            <StatusIndicator
-              variant="nominal"
-              pulse
-              className="hidden md:inline-flex"
-            >
-              ONLINE
-            </StatusIndicator>
-          )}
-        </div>
-
-        <div className="flex items-center gap-3">
-          {isProcessing && (
-            <div className="flex items-center gap-1 text-primary text-[10px] font-mono font-medium animate-pulse mr-2">
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              INFERRING_THREATS
-            </div>
-          )}
-
-          {/* Menubar Option: Threat Log History Toggle */}
-          <button
-            onClick={() => setShowThreatLogPanel(true)}
-            className="flex items-center gap-1.5 rounded-sm border border-border bg-card px-2.5 py-1 text-xs font-mono font-bold uppercase tracking-wider text-muted-foreground hover:bg-muted hover:text-foreground transition-all cursor-pointer shadow-xs"
-            type="button"
-            title="View SQLite Threat Log history"
-          >
-            <History className="w-3.5 h-3.5 text-primary" />
-            THREAT_LOG
-          </button>
-
-          <div className="flex items-center gap-1.5 bg-muted rounded-xs px-2.5 py-1 text-muted-foreground">
-            <Clock className="w-3.5 h-3.5 text-muted-foreground/80" />
-            <span className="font-mono text-2xs font-medium tracking-wide uppercase">
-              {utcTime || "CONNECTING CLOCK..."}
-            </span>
-          </div>
-
-          <button
-            onClick={() => setDarkMode(!darkMode)}
-            className="flex items-center justify-center w-8 h-8 rounded-full border border-border bg-card hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-            type="button"
-            title="Toggle Theme"
-          >
-            {darkMode ? (
-              <Sun className="w-4 h-4" />
-            ) : (
-              <Moon className="w-4 h-4" />
-            )}
-          </button>
-        </div>
-      </header>
+      <MonitorHeader
+        isPrimaryPulsing={isPrimaryPulsing}
+        isProcessing={isProcessing}
+        utcTime={utcTime}
+        darkMode={darkMode}
+        setDarkMode={setDarkMode}
+        setShowThreatLogPanel={setShowThreatLogPanel}
+      />
 
       {/* ── MAIN CONTENT AREA ── */}
       <main className="flex flex-1 flex-col gap-3 overflow-hidden p-3 lg:gap-4 lg:p-4 relative">
@@ -554,7 +465,7 @@ export default function LiveMonitorPage() {
                         >
                           <div className="absolute top-0 left-0 bg-primary px-1.5 py-0.5 text-primary-foreground font-mono text-[8px] font-bold uppercase tracking-wider translate-y-[-100%] rounded-t-xs flex items-center gap-1 shadow-md">
                             <Sparkles className="w-2.5 h-2.5 animate-spin" />
-                            {det.label || cocoClassName(det.class)}{" "}
+                            {det.label || "OBJECT"}{" "}
                             {Math.round(det.confidence * 100)}%
                           </div>
                         </div>
@@ -590,62 +501,12 @@ export default function LiveMonitorPage() {
                   </div>
 
                   {/* FLOATING THREAT ALERT */}
-                  {threat?.isHarm && !threatAcknowledged && (
-                    <div className="absolute top-3 right-3 z-30 w-[340px] rounded-md border border-red-500 bg-red-950/95 backdrop-blur-md p-4 text-white shadow-2xl animate-in slide-in-from-top-4 duration-300">
-                      <div className="flex items-start gap-3">
-                        <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-red-500/20 text-red-400 animate-pulse">
-                          <AlertTriangle className="h-4 w-4 text-red-500" />
-                        </div>
-                        <div className="flex-1 text-left">
-                          <div className="flex items-center justify-between">
-                            <span className="font-heading text-xs font-bold uppercase tracking-wider text-red-400">
-                              SECURITY THREAT IDENTIFIED
-                            </span>
-                            <span className="font-mono text-[8px] bg-red-600/30 px-1 py-0.5 rounded-xs text-red-300 font-bold uppercase">
-                              {threat.severity}
-                            </span>
-                          </div>
-
-                          {/* Threat Reason details */}
-                          <p className="mt-2 font-mono text-[10px] text-red-100 leading-normal uppercase tracking-wide">
-                            {threat.reason}
-                          </p>
-
-                          {/* Snapshot of the moment of alert (Thumbnail) */}
-                          {threat.snapshotPath && (
-                            <div className="relative mt-3 overflow-hidden rounded-xs border border-red-500/30 bg-black/50 shadow-inner group">
-                              {/* biome-ignore lint/performance/noImgElement: Custom local filesystem snapshot JPEG path */}
-                              <img
-                                src={threat.snapshotPath}
-                                alt="Alert Frame Snapshot"
-                                className="w-full h-24 object-cover object-center grayscale-[20%] hover:grayscale-0 transition-all duration-300"
-                              />
-                              <button
-                                onClick={() =>
-                                  setZoomImageUrl(threat.snapshotPath || null)
-                                }
-                                className="absolute bottom-1.5 right-1.5 bg-black/60 hover:bg-black/85 text-white p-1 rounded-xs flex items-center justify-center border border-white/10 transition-colors cursor-pointer"
-                                type="button"
-                                title="Expand Frame Snapshot"
-                              >
-                                <Maximize2 className="w-2.5 h-2.5" />
-                              </button>
-                            </div>
-                          )}
-
-                          <div className="mt-3 flex items-center justify-end">
-                            <button
-                              onClick={() => setThreatAcknowledged(true)}
-                              className="rounded-xs bg-red-600 hover:bg-red-500 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-white shadow-sm transition-colors cursor-pointer"
-                              type="button"
-                            >
-                              ACKNOWLEDGE_THREAT
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                  <ThreatAlertCard
+                    threat={threat}
+                    threatAcknowledged={threatAcknowledged}
+                    setThreatAcknowledged={setThreatAcknowledged}
+                    setZoomImageUrl={setZoomImageUrl}
+                  />
                 </>
               }
             />
@@ -671,217 +532,27 @@ export default function LiveMonitorPage() {
         {/* ── BOTTOM SECTION: INTEL TERMINAL LOG & ACTIVE DETECTIONS ── */}
         <div className="flex min-h-0 shrink-0 flex-col gap-3 sm:h-56 sm:flex-row lg:gap-4">
           {/* Intel Stream Logger Panel (70% width) */}
-          <div className="flex flex-1 flex-col overflow-hidden rounded-md border border-border bg-card shadow-xs">
-            <div className="flex h-9 shrink-0 items-center justify-between border-b border-border bg-muted/30 px-3.5">
-              <div className="flex items-center gap-2">
-                <Terminal className="w-4 h-4 text-muted-foreground" />
-                <MonoLabel className="font-bold">INTEL_STREAM</MonoLabel>
-              </div>
-              <MonoLabel size="2xs" variant="muted" className="font-semibold">
-                SYSTEM: SQLite_SYNC_ACTIVE
-              </MonoLabel>
-            </div>
-
-            <div
-              ref={intelLogScrollRef}
-              className="flex-1 overflow-y-auto p-4 bg-zinc-950/20 dark:bg-black/20"
-            >
-              <IntelLog>
-                {logEntries.map((entry) => (
-                  <IntelLogEntry
-                    key={entry.id}
-                    timestamp={entry.timestamp}
-                    source={entry.source}
-                    message={entry.message}
-                    dimmed={entry.dimmed}
-                  />
-                ))}
-                <IntelLogEntry timestamp="" source="" message="" cursor />
-              </IntelLog>
-            </div>
-          </div>
+          <IntelLogStream
+            logEntries={logEntries}
+            intelLogScrollRef={intelLogScrollRef}
+          />
 
           {/* Active Detections Summary Panel (30% width) */}
-          <div className="flex min-h-[160px] w-full flex-col overflow-hidden rounded-md border border-border bg-card sm:min-h-0 sm:w-[30%] shadow-xs">
-            <div className="flex h-9 shrink-0 items-center gap-3 border-b border-border bg-muted/30 px-3.5">
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                <Database className="w-4 h-4 text-muted-foreground" />
-                <MonoLabel className="truncate font-bold">
-                  SESSION_TOTALS
-                </MonoLabel>
-              </div>
-
-              {/* CPU Load Metric (Fluctuating) */}
-              <div
-                className="flex items-center gap-2 max-w-[45%] shrink-0"
-                title="System CPU workload"
-              >
-                <Cpu className="w-3.5 h-3.5 text-muted-foreground" />
-                <ConfidenceBar
-                  value={systemLoad}
-                  showLabel
-                  variant="silver"
-                  className="w-16 sm:w-20"
-                />
-              </div>
-            </div>
-
-            <div className="flex min-h-0 flex-1 flex-col gap-2 p-4 pt-3">
-              <MonoLabel
-                size="2xs"
-                variant="muted"
-                className="shrink-0 font-semibold"
-              >
-                LOCAL_DB_TALLIES (SQLite)
-              </MonoLabel>
-
-              <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
-                {sortedSessionTotals.length === 0 ? (
-                  <div className="flex h-full items-center justify-center">
-                    <MonoLabel size="xs" variant="muted">
-                      AWAITING_DB_EVENTS...
-                    </MonoLabel>
-                  </div>
-                ) : (
-                  sortedSessionTotals.map(([label, count]) => (
-                    <div
-                      key={label}
-                      className="flex items-center justify-between border-b border-border/40 pb-1.5 last:border-b-0 last:pb-0"
-                    >
-                      <div className="flex items-center gap-2">
-                        <StatusDot variant="silver" size="xs" />
-                        <span className="font-mono text-[10px] text-zinc-300 uppercase tracking-wide">
-                          {label}
-                        </span>
-                      </div>
-                      <span className="font-mono text-xs font-bold text-primary tabular-nums">
-                        {count}
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
+          <StatsPanel
+            systemLoad={systemLoad}
+            sortedSessionTotals={sortedSessionTotals}
+          />
         </div>
 
         {/* ── SLIDE-OVER THREAT LOG DRAWER (ALERTS LIST VIEWER) ── */}
-        {showThreatLogPanel && (
-          <div className="absolute inset-0 bg-background/55 backdrop-blur-xs z-40 flex justify-end animate-in fade-in duration-200">
-            {/* Click outside to close */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: Backdrop click-outside helper */}
-            <div
-              className="flex-1"
-              onClick={() => setShowThreatLogPanel(false)}
-              role="presentation"
-            />
-
-            <div className="w-96 md:w-[420px] h-full bg-card border-l border-border shadow-2xl flex flex-col animate-in slide-in-from-right duration-300">
-              <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-muted/40 px-4">
-                <div className="flex items-center gap-2">
-                  <History className="w-4 h-4 text-primary" />
-                  <MonoLabel className="font-bold">
-                    SQLITE_THREAT_LOGS
-                  </MonoLabel>
-                </div>
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={fetchThreatLog}
-                    className="p-1.5 rounded-sm hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                    type="button"
-                    title="Refresh Log"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => setShowThreatLogPanel(false)}
-                    className="p-1.5 rounded-sm hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                    type="button"
-                    title="Close Panel"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Threat Logs List */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {loadingThreatLog ? (
-                  <div className="flex h-40 flex-col items-center justify-center gap-2">
-                    <RefreshCw className="w-6 h-6 text-primary animate-spin" />
-                    <MonoLabel size="2xs" variant="muted">
-                      READING_SQLITE_INDEX...
-                    </MonoLabel>
-                  </div>
-                ) : threatLogList.length === 0 ? (
-                  <div className="flex h-40 flex-col items-center justify-center text-center">
-                    <AlertTriangle className="w-6 h-6 text-muted-foreground/30 mb-2" />
-                    <MonoLabel size="xs" variant="muted">
-                      NO_THREATS_ARCHIVED
-                    </MonoLabel>
-                    <span className="font-mono text-[9px] text-muted-foreground/50 mt-1 max-w-[200px]">
-                      Verified threat alert details will appear here once
-                      identified.
-                    </span>
-                  </div>
-                ) : (
-                  threatLogList.map((item) => (
-                    <div
-                      key={item.id}
-                      className={`border rounded-md p-3.5 bg-zinc-950/10 dark:bg-black/10 transition-colors ${
-                        item.is_harm === 1
-                          ? "border-red-500/20 hover:border-red-500/40"
-                          : "border-border/60 hover:border-border"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-mono text-[9px] text-zinc-300 font-bold bg-muted px-1.5 py-0.5 rounded-xs leading-none">
-                          {item.camera_id}
-                        </span>
-
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`font-mono text-[8px] px-1 py-0.5 rounded-xs font-bold uppercase leading-none ${
-                              item.is_harm === 1
-                                ? "bg-red-500/25 text-red-400"
-                                : "bg-muted text-muted-foreground"
-                            }`}
-                          >
-                            {item.is_harm === 1 ? "THREAT" : "NOMINAL"}
-                          </span>
-                          <span className="font-mono text-[8px] text-muted-foreground/60 leading-none">
-                            {new Date(item.timestamp).toLocaleTimeString()}
-                          </span>
-                        </div>
-                      </div>
-
-                      <p className="font-mono text-[10px] text-zinc-200 leading-normal uppercase">
-                        {item.reason}
-                      </p>
-
-                      {/* Display Alert Captured Frame from DB path */}
-                      {item.snapshot_path && (
-                        <div className="relative mt-2.5 overflow-hidden rounded-xs border border-border bg-black/40 group">
-                          {/* biome-ignore lint/performance/noImgElement: Custom local filesystem snapshot JPEG path */}
-                          {/* biome-ignore lint/a11y/useKeyWithClickEvents: Clickable image to zoom */}
-                          <img
-                            src={item.snapshot_path}
-                            alt="Captured Threat Moment"
-                            className="w-full h-24 object-cover object-center grayscale-[15%] group-hover:grayscale-0 transition-all duration-300 cursor-pointer"
-                            onClick={() => setZoomImageUrl(item.snapshot_path)}
-                          />
-                          <div className="absolute bottom-1.5 right-1.5 bg-black/60 text-white px-1 font-mono text-[8px] rounded-xs border border-white/5 pointer-events-none">
-                            ALERT_FRAME
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        )}
+        <ThreatsDrawer
+          showThreatLogPanel={showThreatLogPanel}
+          setShowThreatLogPanel={setShowThreatLogPanel}
+          threatLogList={threatLogList}
+          loadingThreatLog={loadingThreatLog}
+          fetchThreatLog={fetchThreatLog}
+          setZoomImageUrl={setZoomImageUrl}
+        />
 
         {/* ── IMAGE ZOOM OVERLAY (FULL SCREEN POPUP) ── */}
         {zoomImageUrl && (

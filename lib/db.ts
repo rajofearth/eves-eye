@@ -8,11 +8,14 @@ const globalForDb = globalThis as unknown as {
   db: Database.Database | undefined;
 };
 
-export const db = globalForDb.db ?? new Database(dbPath);
+const connection = globalForDb.db ?? new Database(dbPath);
 
 if (process.env.NODE_ENV !== "production") {
-  globalForDb.db = db;
+  globalForDb.db = connection;
 }
+
+// Export the raw connection for dynamic API operations (like /api/threats)
+export const db = connection;
 
 // Initialize SQLite tables
 db.exec(`
@@ -58,6 +61,93 @@ const insertThreatStmt = db.prepare(`
   VALUES (?, ?, ?, ?, ?, ?, ?)
 `);
 
+export interface ThreatDbRepository {
+  logDetections(
+    cameraId: string,
+    detections: {
+      label: string;
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+      confidence: number;
+    }[],
+  ): void;
+  logThreat(
+    cameraId: string,
+    threat: {
+      isHarm: boolean;
+      severity: string;
+      reason: string;
+      rawJson: string;
+      snapshotPath?: string;
+    },
+  ): void;
+  getThreatHistory(limit?: number): unknown[];
+}
+
+class SQLiteThreatRepository implements ThreatDbRepository {
+  logDetections(
+    cameraId: string,
+    detections: {
+      label: string;
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+      confidence: number;
+    }[],
+  ): void {
+    const timestamp = new Date().toISOString();
+    const runTransaction = db.transaction((items) => {
+      for (const d of items) {
+        insertDetectionStmt.run(
+          timestamp,
+          cameraId,
+          d.label,
+          d.x1,
+          d.y1,
+          d.x2,
+          d.y2,
+          d.confidence,
+        );
+      }
+    });
+    runTransaction(detections);
+  }
+
+  logThreat(
+    cameraId: string,
+    threat: {
+      isHarm: boolean;
+      severity: string;
+      reason: string;
+      rawJson: string;
+      snapshotPath?: string;
+    },
+  ): void {
+    const timestamp = new Date().toISOString();
+    insertThreatStmt.run(
+      timestamp,
+      cameraId,
+      threat.isHarm ? 1 : 0,
+      threat.severity,
+      threat.reason,
+      threat.rawJson,
+      threat.snapshotPath || null,
+    );
+  }
+
+  getThreatHistory(limit = 100): unknown[] {
+    return db
+      .prepare("SELECT * FROM threats ORDER BY timestamp DESC LIMIT ?")
+      .all(limit);
+  }
+}
+
+export const threatDb: ThreatDbRepository = new SQLiteThreatRepository();
+
+// Backward-compatible exports to avoid breaking existing calls
 export function logDetections(
   cameraId: string,
   detections: {
@@ -69,25 +159,7 @@ export function logDetections(
     confidence: number;
   }[],
 ) {
-  const timestamp = new Date().toISOString();
-
-  // Batch inserts in a transaction for speed
-  const runTransaction = db.transaction((items) => {
-    for (const d of items) {
-      insertDetectionStmt.run(
-        timestamp,
-        cameraId,
-        d.label,
-        d.x1,
-        d.y1,
-        d.x2,
-        d.y2,
-        d.confidence,
-      );
-    }
-  });
-
-  runTransaction(detections);
+  threatDb.logDetections(cameraId, detections);
 }
 
 export function logThreat(
@@ -100,14 +172,5 @@ export function logThreat(
     snapshotPath?: string;
   },
 ) {
-  const timestamp = new Date().toISOString();
-  insertThreatStmt.run(
-    timestamp,
-    cameraId,
-    threat.isHarm ? 1 : 0,
-    threat.severity,
-    threat.reason,
-    threat.rawJson,
-    threat.snapshotPath || null,
-  );
+  threatDb.logThreat(cameraId, threat);
 }
