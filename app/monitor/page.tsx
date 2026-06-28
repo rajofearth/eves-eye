@@ -7,6 +7,7 @@ import {
   Database,
   Layers,
   Moon,
+  RefreshCw,
   Shield,
   Sparkles,
   Sun,
@@ -19,9 +20,11 @@ import { ConfidenceBar } from "@/components/ui/confidence-bar";
 import { IntelLog, IntelLogEntry, IntelTag } from "@/components/ui/intel-log";
 import { MonoLabel } from "@/components/ui/mono-label";
 import { StatusDot, StatusIndicator } from "@/components/ui/status-dot";
+import { useWebcamDetect } from "@/hooks/useWebcamDetect";
+import { cocoClassName } from "@/lib/coco";
 
 // ---------------------------------------------------------------------------
-// Constants & Mock Types
+// Constants & Types
 // ---------------------------------------------------------------------------
 interface MockCamera {
   id: string;
@@ -36,16 +39,6 @@ interface LogEntry {
   source: string;
   message: React.ReactNode;
   dimmed?: boolean;
-}
-
-interface MockDetection {
-  id: string;
-  label: string;
-  confidence: number;
-  x: number; // percentage
-  y: number; // percentage
-  w: number; // percentage
-  h: number; // percentage
 }
 
 const MAX_LOG_ENTRIES = 50;
@@ -90,16 +83,31 @@ export default function LiveMonitorPage() {
   const [activeCameraId, setActiveCameraId] = useState<string>("cam-webcam");
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
-  const [systemLoad, setSystemLoad] = useState<number>(5);
+  const [systemLoad, setSystemLoad] = useState<number>(6);
   const [utcTime, setUtcTime] = useState<string>("");
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
-  const [activeDetections, setActiveDetections] = useState<MockDetection[]>([]);
   const [sessionTotals, setSessionTotals] = useState<Map<string, number>>(
     () => new Map(),
   );
   const [darkMode, setDarkMode] = useState<boolean>(true);
+  const [lastLoggedClasses, setLastLoggedClasses] = useState<string>("");
 
   const intelLogScrollRef = useRef<HTMLDivElement>(null);
+  const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // --- Real-time RT-DETR Detection Hook ---
+  // Runs whenever stream is active, regardless of whether webcam is promoted or in the grid!
+  const {
+    detections,
+    lastLatency,
+    isProcessing,
+    error: detectionError,
+    frameDimensions,
+  } = useWebcamDetect(webcamVideoRef, !!stream, {
+    maxFps: 4,
+    minConfidence: 0.45,
+    cameraId: "CAM-01-WEBCAM",
+  });
 
   // --- Initialize Time & Clock ---
   useEffect(() => {
@@ -127,14 +135,14 @@ export default function LiveMonitorPage() {
     let active = true;
     let activeStream: MediaStream | null = null;
 
-    // Log request initiation
     setLogEntries((prev) => [
       ...prev,
       {
         id: "sys-init",
         timestamp: nowTimestamp(),
         source: "SYS",
-        message: "· Initialization: Requesting browser camera permissions...",
+        message:
+          "· EVE'S EYE system diagnostics active. Reallocating local resources...",
       },
     ]);
 
@@ -188,15 +196,14 @@ export default function LiveMonitorPage() {
         }
       });
 
-    // Seed log entries
+    // Seed initial logs
     setLogEntries((prev) => [
       ...prev,
       {
         id: "seed-1",
         timestamp: nowTimestamp(),
         source: "SYS",
-        message:
-          "· EVE'S EYE system diagnostics active. All nodes reporting nominal.",
+        message: "· RT-DETR Server Session Handler initializing...",
       },
       {
         id: "seed-2",
@@ -205,7 +212,7 @@ export default function LiveMonitorPage() {
         message: (
           <>
             · Live log registry stream online. Hooked to{" "}
-            <IntelTag>SURVEILLANCE_ROUTINE</IntelTag>
+            <IntelTag>RT_DETR_MODEL_INFERENCE</IntelTag>
           </>
         ),
       },
@@ -229,129 +236,111 @@ export default function LiveMonitorPage() {
     }
   }, [logEntries]);
 
-  // --- Tickers & Simulation Loop ---
+  // --- Core Log and Total statistics correlation from real detections ---
   useEffect(() => {
-    // 1. CPU load fluctuator
+    if (!stream || detections.length === 0) return;
+
+    // Group classes to prevent duplicate print triggers on consecutive identical frames
+    const classesSet = new Set(
+      detections.map((d) => d.label || cocoClassName(d.class)),
+    );
+    const classesStr = Array.from(classesSet).sort().join(",");
+
+    if (classesStr !== lastLoggedClasses) {
+      setLastLoggedClasses(classesStr);
+
+      const time = nowTimestamp();
+
+      setLogEntries((prev) => [
+        ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
+        {
+          id: uid(),
+          timestamp: time,
+          source: "VLM",
+          message: (
+            <>
+              · Objects identified on WEBCAM:{" "}
+              {detections.map((d, index) => (
+                <span
+                  key={`log-item-${index}-${d.class}-${d.confidence}-${d.label || ""}`}
+                >
+                  {index > 0 && ", "}
+                  <IntelTag>{d.label || cocoClassName(d.class)}</IntelTag> (
+                  {Math.round(d.confidence * 100)}%)
+                </span>
+              ))}
+            </>
+          ),
+        },
+      ]);
+
+      // Update counters in panel
+      setSessionTotals((prev) => {
+        const next = new Map(prev);
+        for (const d of detections) {
+          const label = d.label || cocoClassName(d.class);
+          next.set(label, (next.get(label) ?? 0) + 1);
+        }
+        return next;
+      });
+    }
+  }, [detections, lastLoggedClasses, stream]);
+
+  // --- Log error warnings if detection fails ---
+  useEffect(() => {
+    if (detectionError) {
+      setLogEntries((prev) => [
+        ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
+        {
+          id: uid(),
+          timestamp: nowTimestamp(),
+          source: "SYS",
+          message: `· WARNING: ${detectionError}`,
+        },
+      ]);
+    }
+  }, [detectionError]);
+
+  // --- Simulated Diagnostic Tickers ---
+  useEffect(() => {
+    // 1. CPU Load Fluctuator
     const cpuInterval = setInterval(() => {
       setSystemLoad((prev) => {
-        const change = Math.floor(Math.random() * 3) - 1; // -1, 0, or 1
-        return Math.max(3, Math.min(18, prev + change));
+        const change = Math.floor(Math.random() * 3) - 1;
+        return Math.max(4, Math.min(22, prev + change));
       });
-    }, 2000);
+    }, 3000);
 
-    // 2. Mock log and object detection simulator
+    // 2. Simulated System Messages
     const mockLogs = [
-      {
-        type: "sys",
-        msg: "· Diagnostics: System thermal load 41.5°C — NOMINAL",
-      },
-      {
-        type: "sys",
-        msg: "· Network check: Frame packet buffer latency 8.2ms",
-      },
-      {
-        type: "sys",
-        msg: "· Storage routine: Automated logs rotation completed",
-      },
-      {
-        type: "alert",
-        msg: "· Threat assessor: Running model inference checks",
-      },
+      "· Diagnostics: Core temperatures within bounds (39.2°C)",
+      "· Buffer Routine: Purging frame cache (0B cleared)",
+      "· Security Policy: Session validated successfully",
     ];
 
-    const mockDetectionsPool = [
-      { label: "PERSON", x: 22, y: 18, w: 25, h: 65 },
-      { label: "BACKPACK", x: 48, y: 45, w: 15, h: 25 },
-      { label: "LAPTOP", x: 35, y: 55, w: 20, h: 20 },
-      { label: "MOBILE PHONE", x: 62, y: 40, w: 10, h: 15 },
-    ];
-
-    const simInterval = setInterval(() => {
-      const roll = Math.random();
-
-      if (roll < 0.45) {
-        // Trigger a simulated object detection event on the active feed!
-        const randDet =
-          mockDetectionsPool[
-            Math.floor(Math.random() * mockDetectionsPool.length)
-          ];
-        const conf = Math.floor(Math.random() * 15) + 84; // 84-98%
-        const activeCam = INITIAL_CAMERAS.find((c) => c.id === activeCameraId);
-        const activeCamLabel = activeCam
-          ? activeCam.cameraId.split("-").pop()
-          : "CAM";
-
-        const newDet: MockDetection = {
+    const logInterval = setInterval(() => {
+      const msg = mockLogs[Math.floor(Math.random() * mockLogs.length)];
+      setLogEntries((prev) => [
+        ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
+        {
           id: uid(),
-          label: randDet.label,
-          confidence: conf,
-          x: randDet.x + (Math.random() * 8 - 4),
-          y: randDet.y + (Math.random() * 6 - 3),
-          w: randDet.w,
-          h: randDet.h,
-        };
-
-        // 1. Show the bounding box overlay on the feed
-        setActiveDetections([newDet]);
-
-        // 2. Log the detection event
-        setLogEntries((prev) => [
-          ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
-          {
-            id: uid(),
-            timestamp: nowTimestamp(),
-            source: "VLM",
-            message: (
-              <>
-                · <IntelTag>{randDet.label}</IntelTag> detected on{" "}
-                {activeCamLabel} at {conf}% confidence.
-              </>
-            ),
-          },
-        ]);
-
-        // 3. Increment counters
-        setSessionTotals((prev) => {
-          const next = new Map(prev);
-          next.set(randDet.label, (next.get(randDet.label) ?? 0) + 1);
-          return next;
-        });
-
-        // 4. Remove bounding box highlight after 2.5 seconds
-        setTimeout(() => {
-          setActiveDetections((current) =>
-            current.filter((d) => d.id !== newDet.id),
-          );
-        }, 2500);
-      } else {
-        // Just log a standard system routine message
-        const randLog = mockLogs[Math.floor(Math.random() * mockLogs.length)];
-        setLogEntries((prev) => [
-          ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
-          {
-            id: uid(),
-            timestamp: nowTimestamp(),
-            source: randLog.type === "alert" ? "VLM" : "SYS",
-            message: randLog.msg,
-            dimmed: true,
-          },
-        ]);
-      }
-    }, 4500);
+          timestamp: nowTimestamp(),
+          source: "SYS",
+          message: msg,
+          dimmed: true,
+        },
+      ]);
+    }, 12000);
 
     return () => {
       clearInterval(cpuInterval);
-      clearInterval(simInterval);
+      clearInterval(logInterval);
     };
-  }, [activeCameraId]);
+  }, []);
 
   // --- Handlers ---
   const handlePromoteCamera = (id: string) => {
     setActiveCameraId(id);
-    // Clear active overlays immediately on switch
-    setActiveDetections([]);
-
-    // Log the promotional event
     const targetCam = INITIAL_CAMERAS.find((c) => c.id === id);
     if (targetCam) {
       setLogEntries((prev) => [
@@ -396,6 +385,13 @@ export default function LiveMonitorPage() {
         </div>
 
         <div className="flex items-center gap-4">
+          {isProcessing && (
+            <div className="flex items-center gap-1 text-primary text-[10px] font-mono font-medium animate-pulse">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              RUNNING_INFERENCE
+            </div>
+          )}
+
           <div className="flex items-center gap-1.5 bg-muted rounded-xs px-2.5 py-1 text-muted-foreground">
             <Clock className="w-3.5 h-3.5 text-muted-foreground/80" />
             <span className="font-mono text-2xs font-medium tracking-wide uppercase">
@@ -429,42 +425,54 @@ export default function LiveMonitorPage() {
               isPrimary
               stream={activeCamera.sourceType === "device" ? stream : null}
               error={activeCamera.sourceType === "device" ? streamError : null}
+              videoRef={
+                activeCamera.id === "cam-webcam" ? webcamVideoRef : undefined
+              }
               overlays={
                 <>
-                  {/* Bounding Box Highlights (Simulated Object Detection Overlay) */}
-                  {activeDetections.map((det) => (
-                    <div
-                      key={det.id}
-                      className="absolute border-2 border-primary bg-primary/5 rounded-xs pointer-events-none transition-all duration-300 animate-in fade-in zoom-in-95 duration-200"
-                      style={{
-                        left: `${det.x}%`,
-                        top: `${det.y}%`,
-                        width: `${det.w}%`,
-                        height: `${det.h}%`,
-                      }}
-                    >
-                      <div className="absolute top-0 left-0 bg-primary px-1.5 py-0.5 text-primary-foreground font-mono text-[8px] font-bold uppercase tracking-wider translate-y-[-100%] rounded-t-xs flex items-center gap-1 shadow-md">
-                        <Sparkles className="w-2.5 h-2.5 animate-spin" />
-                        {det.label} {det.confidence}%
-                      </div>
-                    </div>
-                  ))}
+                  {/* Real Bounding Box Highlights (Rendered relative to absolute frame size) */}
+                  {activeCamera.id === "cam-webcam" &&
+                    frameDimensions &&
+                    detections.map((det, index) => {
+                      const fw = frameDimensions.width || 640;
+                      const fh = frameDimensions.height || 480;
+
+                      const left = (det.x1 / fw) * 100;
+                      const top = (det.y1 / fh) * 100;
+                      const width = ((det.x2 - det.x1) / fw) * 100;
+                      const height = ((det.y2 - det.y1) / fh) * 100;
+
+                      return (
+                        <div
+                          key={`bbox-${index}-${det.class}-${det.confidence}`}
+                          className="absolute border-2 border-primary bg-primary/5 rounded-xs pointer-events-none transition-all duration-100"
+                          style={{
+                            left: `${left}%`,
+                            top: `${top}%`,
+                            width: `${width}%`,
+                            height: `${height}%`,
+                          }}
+                        >
+                          <div className="absolute top-0 left-0 bg-primary px-1.5 py-0.5 text-primary-foreground font-mono text-[8px] font-bold uppercase tracking-wider translate-y-[-100%] rounded-t-xs flex items-center gap-1 shadow-md">
+                            <Sparkles className="w-2.5 h-2.5 animate-spin" />
+                            {det.label || cocoClassName(det.class)}{" "}
+                            {Math.round(det.confidence * 100)}%
+                          </div>
+                        </div>
+                      );
+                    })}
 
                   {/* High Tech Status Corner Badges */}
                   <div className="absolute bottom-3 right-3 flex items-center gap-2 border border-border bg-card/80 backdrop-blur-xs rounded-sm px-2.5 py-1 z-10 shadow-lg">
                     <Layers className="w-3.5 h-3.5 text-primary" />
                     <div className="flex flex-col text-left">
-                      <MonoLabel size="2xs">VLM_ANALYSIS</MonoLabel>
+                      <MonoLabel size="2xs">MODEL_ANALYSIS</MonoLabel>
                       <MonoLabel
                         size="xs"
-                        variant={
-                          activeDetections.length > 0 ? "warning" : "nominal"
-                        }
+                        variant={isProcessing ? "warning" : "nominal"}
                         className="font-semibold"
                       >
-                        {activeDetections.length > 0
-                          ? "ANALYZING..."
-                          : "NOMINAL"}
+                        {isProcessing ? "INFERRING..." : "RT-DETR LIVE"}
                       </MonoLabel>
                     </div>
                   </div>
@@ -476,7 +484,9 @@ export default function LiveMonitorPage() {
                       variant="silver"
                       className="font-semibold"
                     >
-                      30.0 FPS
+                      {lastLatency !== null
+                        ? `${lastLatency.toFixed(0)}ms`
+                        : "N/A"}
                     </MonoLabel>
                   </div>
                 </>
@@ -493,6 +503,9 @@ export default function LiveMonitorPage() {
                 stream={camera.sourceType === "device" ? stream : null}
                 error={camera.sourceType === "device" ? streamError : null}
                 onSelect={handlePromoteCamera}
+                videoRef={
+                  camera.id === "cam-webcam" ? webcamVideoRef : undefined
+                }
               />
             ))}
           </div>
@@ -526,7 +539,6 @@ export default function LiveMonitorPage() {
                     dimmed={entry.dimmed}
                   />
                 ))}
-                {/* Live Ticking Cursor */}
                 <IntelLogEntry timestamp="" source="" message="" cursor />
               </IntelLog>
             </div>
@@ -570,7 +582,7 @@ export default function LiveMonitorPage() {
                 {sortedSessionTotals.length === 0 ? (
                   <div className="flex h-full items-center justify-center">
                     <MonoLabel size="xs" variant="muted">
-                      AWAITING_EVENTS...
+                      AWAITING_REAL_EVENTS...
                     </MonoLabel>
                   </div>
                 ) : (

@@ -199,18 +199,21 @@ export function WebcamSurface({
   stream,
   error,
   isPrimary = false,
+  videoRef,
 }: {
   stream: MediaStream | null;
   error: string | null;
   isPrimary?: boolean;
+  videoRef?: React.RefObject<HTMLVideoElement | null>;
 }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const activeVideoRef = videoRef ?? localVideoRef;
 
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
+    if (activeVideoRef.current && stream) {
+      activeVideoRef.current.srcObject = stream;
     }
-  }, [stream]);
+  }, [stream, activeVideoRef]);
 
   if (error) {
     return (
@@ -240,7 +243,7 @@ export function WebcamSurface({
   return (
     <div className="relative w-full h-full bg-black select-none">
       <video
-        ref={videoRef}
+        ref={activeVideoRef}
         autoPlay
         playsInline
         muted
@@ -271,6 +274,7 @@ export interface CameraSurfaceProps {
   readonly error?: string | null;
   readonly onSelect?: (cameraId: string) => void;
   readonly overlays?: React.ReactNode;
+  readonly videoRef?: React.RefObject<HTMLVideoElement | null>;
 }
 
 export function CameraSurface({
@@ -281,6 +285,7 @@ export function CameraSurface({
   error = null,
   onSelect,
   overlays,
+  videoRef,
 }: CameraSurfaceProps) {
   const handleClick = () => {
     if (!camera || !onSelect) return;
@@ -373,6 +378,7 @@ export function CameraSurface({
               stream={stream}
               error={error}
               isPrimary={isPrimary}
+              videoRef={videoRef}
             />
           ) : (
             <SimulatedCameraFeed name={camera.name} isPrimary={isPrimary} />
