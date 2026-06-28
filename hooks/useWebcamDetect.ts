@@ -22,6 +22,12 @@ export interface FrameDimensions {
   readonly height: number;
 }
 
+export interface ThreatAlert {
+  readonly isHarm: boolean;
+  readonly severity: "critical" | "warning" | "nominal";
+  readonly reason: string;
+}
+
 export interface UseWebcamDetectOptions {
   readonly maxFps?: number;
   readonly minConfidence?: number;
@@ -35,6 +41,7 @@ export interface UseWebcamDetectResult {
   readonly isProcessing: boolean;
   readonly error: string | null;
   readonly frameDimensions: FrameDimensions | null;
+  readonly threat: ThreatAlert | null;
 }
 
 const DEFAULT_MAX_FPS = 4;
@@ -56,6 +63,7 @@ export function useWebcamDetect(
   const [error, setError] = useState<string | null>(null);
   const [frameDimensions, setFrameDimensions] =
     useState<FrameDimensions | null>(null);
+  const [threat, setThreat] = useState<ThreatAlert | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -147,7 +155,6 @@ export function useWebcamDetect(
       });
 
       if (!res.ok) {
-        // Retrieve error message details if available
         const errText = await res.text();
         throw new Error(errText || `HTTP ${res.status}: ${res.statusText}`);
       }
@@ -157,7 +164,6 @@ export function useWebcamDetect(
       if (!json.ok) {
         const errMsg = json.message || "Detection failed";
 
-        // Handle rate limiting specifically
         if (
           errMsg.includes("429") ||
           errMsg.toLowerCase().includes("too many requests") ||
@@ -168,7 +174,7 @@ export function useWebcamDetect(
               ? 12000
               : Math.min(60000, backoffDelayRef.current * 2);
           console.warn(
-            `[useWebcamDetect] Rate limit backoff triggered from server message: ${backoffDelayRef.current}ms`,
+            `[useWebcamDetect] Rate limit backoff: ${backoffDelayRef.current}ms`,
           );
         } else {
           backoffDelayRef.current = 5000;
@@ -179,9 +185,9 @@ export function useWebcamDetect(
           setDetections([]);
           setLastLatency(null);
           setFrameDimensions(null);
+          setThreat(null);
         });
       } else {
-        // Reset backoff delay on successful detection
         backoffDelayRef.current = 0;
 
         const filtered = (json.detections || []).filter(
@@ -191,6 +197,7 @@ export function useWebcamDetect(
           setDetections(filtered);
           setLastLatency(json.meta?.latencyMs ?? null);
           setFrameDimensions(json.frame || null);
+          setThreat(json.threat || null);
           setError(null);
         });
       }
@@ -198,7 +205,6 @@ export function useWebcamDetect(
       if (err instanceof Error && err.name === "AbortError") return;
       const msg = err instanceof Error ? err.message : "Unknown error";
 
-      // Handle rate limiting specifically on HTTP/network errors
       if (
         msg.includes("429") ||
         msg.toLowerCase().includes("too many requests") ||
@@ -220,6 +226,7 @@ export function useWebcamDetect(
         setDetections([]);
         setLastLatency(null);
         setFrameDimensions(null);
+        setThreat(null);
       });
     } finally {
       setIsProcessing(false);
@@ -255,6 +262,7 @@ export function useWebcamDetect(
       setError(null);
       setFrameDimensions(null);
       setIsProcessing(false);
+      setThreat(null);
       return;
     }
 
@@ -279,5 +287,6 @@ export function useWebcamDetect(
     isProcessing,
     error,
     frameDimensions,
+    threat,
   };
 }

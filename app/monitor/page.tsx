@@ -2,6 +2,7 @@
 
 import {
   Activity,
+  AlertTriangle,
   Clock,
   Cpu,
   Database,
@@ -92,17 +93,21 @@ export default function LiveMonitorPage() {
   const [darkMode, setDarkMode] = useState<boolean>(true);
   const [lastLoggedClasses, setLastLoggedClasses] = useState<string>("");
 
+  // --- Threat Management States ---
+  const [lastThreatReason, setLastThreatReason] = useState<string>("");
+  const [threatAcknowledged, setThreatAcknowledged] = useState<boolean>(false);
+
   const intelLogScrollRef = useRef<HTMLDivElement>(null);
   const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
 
-  // --- Real-time RT-DETR Detection Hook ---
-  // Runs whenever stream is active, regardless of whether webcam is promoted or in the grid!
+  // --- Real-time Object & Threat Detection Hook ---
   const {
     detections,
     lastLatency,
     isProcessing,
     error: detectionError,
     frameDimensions,
+    threat,
   } = useWebcamDetect(webcamVideoRef, !!stream, {
     maxFps: 0.15, // Safe rate limiting for cloud APIs (approx 1 request per 6.6 seconds)
     minConfidence: 0.45,
@@ -203,7 +208,8 @@ export default function LiveMonitorPage() {
         id: "seed-1",
         timestamp: nowTimestamp(),
         source: "SYS",
-        message: "· RT-DETR Server Session Handler initializing...",
+        message:
+          "· Gemma 4 Cloud Threat Analyzer Session Handler initializing...",
       },
       {
         id: "seed-2",
@@ -212,7 +218,8 @@ export default function LiveMonitorPage() {
         message: (
           <>
             · Live log registry stream online. Hooked to{" "}
-            <IntelTag>RT_DETR_MODEL_INFERENCE</IntelTag>
+            <IntelTag>GEMMA_4_31B_VISION</IntelTag> and{" "}
+            <IntelTag>LOCAL_SQLITE_LOGS</IntelTag>
           </>
         ),
       },
@@ -235,6 +242,29 @@ export default function LiveMonitorPage() {
       el.scrollTop = el.scrollHeight;
     }
   }, [logEntries]);
+
+  // --- Threat Interceptor ---
+  useEffect(() => {
+    if (threat?.isHarm && threat.reason !== lastThreatReason) {
+      setLastThreatReason(threat.reason);
+      setThreatAcknowledged(false); // Fire a new alert card!
+
+      // Log security event in red in the scrolling terminal log
+      setLogEntries((prev) => [
+        ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
+        {
+          id: uid(),
+          timestamp: nowTimestamp(),
+          source: "CRIT",
+          message: (
+            <span className="font-bold text-red-500 animate-pulse tracking-wide">
+              !!! THREAT DETECTED: {threat.reason.toUpperCase()}
+            </span>
+          ),
+        },
+      ]);
+    }
+  }, [threat, lastThreatReason]);
 
   // --- Core Log and Total statistics correlation from real detections ---
   useEffect(() => {
@@ -314,7 +344,7 @@ export default function LiveMonitorPage() {
     // 2. Simulated System Messages
     const mockLogs = [
       "· Diagnostics: Core temperatures within bounds (39.2°C)",
-      "· Buffer Routine: Purging frame cache (0B cleared)",
+      "· SQLite Handler: Syncing transaction buffers to database...",
       "· Security Policy: Session validated successfully",
     ];
 
@@ -364,31 +394,41 @@ export default function LiveMonitorPage() {
     return [...sessionTotals.entries()].sort((a, b) => b[1] - a[1]);
   }, [sessionTotals]);
 
+  const isPrimaryPulsing = threat?.isHarm && !threatAcknowledged;
+
   return (
     <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-background font-sans text-foreground transition-colors duration-300">
       {/* ── HEADER PANEL ── */}
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card/45 backdrop-blur-md px-4 py-1.5">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1.5 bg-primary/10 rounded-sm px-2 py-0.5 border border-primary/20">
-            <Shield className="w-4 h-4 text-primary animate-pulse" />
+            <Shield className="w-4 h-4 text-primary" />
             <span className="font-heading text-xs font-semibold uppercase tracking-wider text-primary">
               EVE&apos;S EYE
             </span>
           </div>
-          <StatusIndicator
-            variant="nominal"
-            pulse
-            className="hidden md:inline-flex"
-          >
-            ONLINE
-          </StatusIndicator>
+
+          {isPrimaryPulsing ? (
+            <div className="inline-flex items-center gap-1.5 rounded-sm border border-red-500/30 bg-red-950/20 px-2 py-0.5 font-mono text-[10px] font-bold text-red-500 animate-pulse">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              THREAT ACTIVE
+            </div>
+          ) : (
+            <StatusIndicator
+              variant="nominal"
+              pulse
+              className="hidden md:inline-flex"
+            >
+              ONLINE
+            </StatusIndicator>
+          )}
         </div>
 
         <div className="flex items-center gap-4">
           {isProcessing && (
             <div className="flex items-center gap-1 text-primary text-[10px] font-mono font-medium animate-pulse">
               <RefreshCw className="w-3 h-3 animate-spin" />
-              RUNNING_INFERENCE
+              INFERRING_THREATS
             </div>
           )}
 
@@ -419,7 +459,13 @@ export default function LiveMonitorPage() {
         {/* ── TOP SECTION: PRIMARY STREAM & MINI GRID ── */}
         <div className="flex min-h-0 flex-1 flex-col gap-3 md:flex-row lg:gap-4">
           {/* Primary Promotion Frame (62% width) */}
-          <div className="flex min-h-[250px] w-full md:min-h-0 md:w-[62%] relative">
+          <div
+            className={`flex min-h-[250px] w-full md:min-h-0 md:w-[62%] relative rounded-md transition-all duration-300 overflow-hidden ${
+              isPrimaryPulsing
+                ? "ring-2 ring-red-500 ring-offset-2 ring-offset-background shadow-[0_0_20px_rgba(239,68,68,0.45)]"
+                : "border border-border"
+            }`}
+          >
             <CameraSurface
               camera={activeCamera}
               isPrimary
@@ -430,7 +476,7 @@ export default function LiveMonitorPage() {
               }
               overlays={
                 <>
-                  {/* Real Bounding Box Highlights (Rendered relative to absolute frame size) */}
+                  {/* Real Bounding Box Highlights */}
                   {activeCamera.id === "cam-webcam" &&
                     frameDimensions &&
                     detections.map((det, index) => {
@@ -462,17 +508,17 @@ export default function LiveMonitorPage() {
                       );
                     })}
 
-                  {/* High Tech Status Corner Badges */}
+                  {/* Operational Security Status corner badges */}
                   <div className="absolute bottom-3 right-3 flex items-center gap-2 border border-border bg-card/80 backdrop-blur-xs rounded-sm px-2.5 py-1 z-10 shadow-lg">
                     <Layers className="w-3.5 h-3.5 text-primary" />
                     <div className="flex flex-col text-left">
-                      <MonoLabel size="2xs">MODEL_ANALYSIS</MonoLabel>
+                      <MonoLabel size="2xs">THREAT_ANALYZER</MonoLabel>
                       <MonoLabel
                         size="xs"
                         variant={isProcessing ? "warning" : "nominal"}
                         className="font-semibold"
                       >
-                        {isProcessing ? "INFERRING..." : "RT-DETR LIVE"}
+                        {isProcessing ? "ANALYZING..." : "GEMMA 4 31B"}
                       </MonoLabel>
                     </div>
                   </div>
@@ -489,6 +535,39 @@ export default function LiveMonitorPage() {
                         : "N/A"}
                     </MonoLabel>
                   </div>
+
+                  {/* FLOATING THREAT ALERT - Not full-window, but prominent operational alert banner */}
+                  {threat?.isHarm && !threatAcknowledged && (
+                    <div className="absolute top-3 right-3 z-30 w-[340px] rounded-md border border-red-500 bg-red-950/95 backdrop-blur-md p-4 text-white shadow-2xl animate-in slide-in-from-top-4 duration-300">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-red-500/20 text-red-400 animate-pulse">
+                          <AlertTriangle className="h-4 w-4 text-red-500" />
+                        </div>
+                        <div className="flex-1 text-left">
+                          <div className="flex items-center justify-between">
+                            <span className="font-heading text-xs font-bold uppercase tracking-wider text-red-400">
+                              SECURITY THREAT IDENTIFIED
+                            </span>
+                            <span className="font-mono text-[8px] bg-red-600/30 px-1 py-0.5 rounded-xs text-red-300 font-bold uppercase">
+                              {threat.severity}
+                            </span>
+                          </div>
+                          <p className="mt-2 font-mono text-[10px] text-red-100 leading-normal uppercase tracking-wide">
+                            {threat.reason}
+                          </p>
+                          <div className="mt-3 flex items-center justify-end">
+                            <button
+                              onClick={() => setThreatAcknowledged(true)}
+                              className="rounded-xs bg-red-600 hover:bg-red-500 px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-white shadow-sm transition-colors cursor-pointer"
+                              type="button"
+                            >
+                              ACKNOWLEDGE_THREAT
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </>
               }
             />
@@ -521,7 +600,7 @@ export default function LiveMonitorPage() {
                 <MonoLabel className="font-bold">INTEL_STREAM</MonoLabel>
               </div>
               <MonoLabel size="2xs" variant="muted" className="font-semibold">
-                SYSTEM: LOGGING_ACTIVE
+                SYSTEM: SQLite_SYNC_ACTIVE
               </MonoLabel>
             </div>
 
@@ -575,14 +654,14 @@ export default function LiveMonitorPage() {
                 variant="muted"
                 className="shrink-0 font-semibold"
               >
-                DETECTION_COUNTS (ALL_CLASSES)
+                LOCAL_DB_TALLIES (SQLite)
               </MonoLabel>
 
               <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
                 {sortedSessionTotals.length === 0 ? (
                   <div className="flex h-full items-center justify-center">
                     <MonoLabel size="xs" variant="muted">
-                      AWAITING_REAL_EVENTS...
+                      AWAITING_DB_EVENTS...
                     </MonoLabel>
                   </div>
                 ) : (
