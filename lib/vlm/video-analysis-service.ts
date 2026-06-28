@@ -8,6 +8,31 @@ import { db } from "../db";
 
 const execPromise = promisify(exec);
 
+/** How many Gemma calls run simultaneously during object scanning */
+const OBJECT_SCAN_CONCURRENCY = 6;
+
+/**
+ * Runs `fn` over every item in `items` with at most `concurrency` parallel
+ * executions at a time. As soon as one slot frees another item is picked up,
+ * so slow frames don't block faster ones from starting.
+ */
+async function runConcurrent<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let idx = 0;
+  async function worker() {
+    while (idx < items.length) {
+      const i = idx++;
+      await fn(items[i]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, worker),
+  );
+}
+
 interface CerebrasResponse {
   choices?: {
     message?: {
@@ -326,10 +351,11 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
     await mkdir(facesDir, { recursive: true });
 
     try {
-      // 1. Extract frames
+      // ── Phase 1: Extract frames ────────────────────────────────────────────
       db.prepare(
         "UPDATE video_jobs SET status = 'extracting' WHERE id = ?",
       ).run(jobId);
+
       const totalFrames = await this.extractFrames(videoFilePath, framesDir);
 
       db.prepare(
@@ -337,49 +363,95 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
       ).run(totalFrames, jobId);
 
       const files = await readdir(framesDir);
-      const frameFiles = files.filter((f) => f.endsWith(".jpg")).sort();
+      const frameEntries = files
+        .filter((f) => f.endsWith(".jpg"))
+        .sort()
+        .map((f, i) => ({
+          file: f,
+          frameIndex: i + 1,
+          timestampSec: i + 1, // 1fps → index equals seconds
+        }));
 
+      // Collect face boxes from Phase 1 for sequential processing in Phase 2
+      // Key: frameIndex → array of face bounding boxes
+      const faceBoxesPerFrame = new Map<
+        number,
+        { box_2d: [number, number, number, number] }[]
+      >();
+
+      // ── Phase 2: Parallel object scanning ─────────────────────────────────
+      // Each worker scans a frame and writes detections to SQLite immediately.
+      // The frontend polls /api/analysis/status every 1.5 s and sees them
+      // stream in live as they arrive — no need to wait for all frames.
+      await runConcurrent(
+        frameEntries,
+        OBJECT_SCAN_CONCURRENCY,
+        async ({ file, frameIndex, timestampSec }) => {
+          const framePath = join(framesDir, file);
+          const scanResult = await this.scanFrame(
+            framePath,
+            jobId,
+            frameIndex,
+          );
+
+          // Persist face boxes so Phase 3 can process them sequentially
+          if (scanResult.faces.length > 0) {
+            faceBoxesPerFrame.set(frameIndex, scanResult.faces);
+          }
+
+          // Write object detections immediately — frontend sees them live
+          const insertDetection = db.prepare(`
+            INSERT INTO video_detections
+              (job_id, frame_index, timestamp_sec, label, x1, y1, x2, y2, confidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          for (const det of scanResult.detections) {
+            const xmin = det.box_2d[1];
+            const ymin = det.box_2d[0];
+            const xmax = det.box_2d[3];
+            const ymax = det.box_2d[2];
+            insertDetection.run(
+              jobId,
+              frameIndex,
+              timestampSec,
+              det.label.toUpperCase(),
+              xmin,
+              ymin,
+              xmax,
+              ymax,
+              0.95,
+            );
+          }
+
+          // Atomic increment so concurrent workers don't stomp each other
+          db.prepare(
+            "UPDATE video_jobs SET completed_frames = completed_frames + 1 WHERE id = ?",
+          ).run(jobId);
+        },
+      );
+
+      // ── Phase 3: Sequential face deduplication ────────────────────────────
+      // Must run in frame order so that Gemma can compare each new face crop
+      // against the growing confirmed-unique portfolio without race conditions.
       const uniqueFaces: {
         faceId: string;
         avatarPath: string;
         diskPath: string;
       }[] = [];
 
-      // 2. Loop and scan each frame
-      for (let i = 0; i < frameFiles.length; i++) {
-        const frameFile = frameFiles[i];
-        const framePath = join(framesDir, frameFile);
-        const frameIndex = i + 1;
-        const timestampSec = frameIndex; // 1 frame per second -> timestamp matches index
+      const sortedFaceFrames = [...faceBoxesPerFrame.entries()].sort(
+        ([a], [b]) => a - b,
+      );
 
-        // Scan frame for objects and faces
-        const scanResult = await this.scanFrame(framePath, jobId, frameIndex);
+      for (const [frameIndex, faceBoxes] of sortedFaceFrames) {
+        const framePath = join(
+          framesDir,
+          frameEntries[frameIndex - 1]?.file ?? "",
+        );
+        const timestampSec = frameIndex;
 
-        // Log detections to SQLite
-        for (const det of scanResult.detections) {
-          const xmin = det.box_2d[1];
-          const ymin = det.box_2d[0];
-          const xmax = det.box_2d[3];
-          const ymax = det.box_2d[2];
-
-          db.prepare(`
-            INSERT INTO video_detections (job_id, frame_index, timestamp_sec, label, x1, y1, x2, y2, confidence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(
-            jobId,
-            frameIndex,
-            timestampSec,
-            det.label.toUpperCase(),
-            xmin,
-            ymin,
-            xmax,
-            ymax,
-            0.95,
-          );
-        }
-
-        // Process face detections
-        for (const fBox of scanResult.faces) {
+        for (const fBox of faceBoxes) {
           const result = await this.processFaceCrop(
             framePath,
             jobId,
@@ -389,33 +461,26 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
           );
           if (result) {
             const { faceId, avatarPath, diskPath } = result;
-
-            // Only add to unique list if we haven't seen this face identity before
             if (!uniqueFaces.some((uf) => uf.faceId === faceId)) {
               uniqueFaces.push({ faceId, avatarPath, diskPath });
             }
-
             db.prepare(`
-              INSERT INTO video_faces (job_id, frame_index, timestamp_sec, face_id, avatar_path)
+              INSERT INTO video_faces
+                (job_id, frame_index, timestamp_sec, face_id, avatar_path)
               VALUES (?, ?, ?, ?, ?)
             `).run(jobId, frameIndex, timestampSec, faceId, avatarPath);
           }
         }
-
-        // Update progress counter
-        db.prepare(
-          "UPDATE video_jobs SET completed_frames = ? WHERE id = ?",
-        ).run(i + 1, jobId);
       }
 
-      // 3. Final Timeline Threat Analysis
+      // ── Phase 4: Threat timeline analysis ────────────────────────────────
       db.prepare(
         "UPDATE video_jobs SET status = 'summarizing' WHERE id = ?",
       ).run(jobId);
 
       const detections = db
         .prepare(
-          "SELECT timestamp_sec, label FROM video_detections WHERE job_id = ?",
+          "SELECT timestamp_sec, label FROM video_detections WHERE job_id = ? ORDER BY timestamp_sec ASC",
         )
         .all(jobId) as { timestamp_sec: number; label: string }[];
 
@@ -424,34 +489,20 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
         detections,
       );
 
-      // Store threats segments
+      // Store warning/critical segments
       for (const t of timelineAnalysis.threat_periods) {
-        db.prepare(`
-          INSERT INTO video_threats (job_id, start_sec, end_sec, severity, reason)
-          VALUES (?, ?, ?, 'critical', ?)
-        `).run(jobId, t.start, t.end, t.reason);
+        db.prepare(
+          "INSERT INTO video_threats (job_id, start_sec, end_sec, severity, reason) VALUES (?, ?, ?, 'critical', ?)",
+        ).run(jobId, t.start, t.end, t.reason);
       }
-
       for (const w of timelineAnalysis.warning_periods) {
-        db.prepare(`
-          INSERT INTO video_threats (job_id, start_sec, end_sec, severity, reason)
-          VALUES (?, ?, ?, 'warning', ?)
-        `).run(jobId, w.start, w.end, w.reason);
+        db.prepare(
+          "INSERT INTO video_threats (job_id, start_sec, end_sec, severity, reason) VALUES (?, ?, ?, 'warning', ?)",
+        ).run(jobId, w.start, w.end, w.reason);
       }
 
-      // Rewrite event logs in detections if generated by Gemma
-      if (timelineAnalysis.events && timelineAnalysis.events.length > 0) {
-        // Clear automatic detections log and insert structured threat logs
-        db.prepare("DELETE FROM video_detections WHERE job_id = ?").run(jobId);
-        for (const ev of timelineAnalysis.events) {
-          db.prepare(`
-            INSERT INTO video_detections (job_id, frame_index, timestamp_sec, label, x1, y1, x2, y2, confidence)
-            VALUES (?, ?, ?, ?, 0, 0, 0, 0, ?)
-          `).run(jobId, Math.floor(ev.time_sec), ev.time_sec, ev.cls, ev.conf);
-        }
-      }
-
-      // Set job status completed
+      // Mark job complete — preserve the streaming detections (bounding boxes)
+      // so the video player can still show them during playback.
       db.prepare(
         "UPDATE video_jobs SET status = 'completed', summary = ? WHERE id = ?",
       ).run(timelineAnalysis.summary, jobId);
