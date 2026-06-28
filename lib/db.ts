@@ -82,6 +82,22 @@ db.exec(`
     severity TEXT NOT NULL,
     reason TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS chat_sessions (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    video_job_ids TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    tool_calls TEXT,
+    created_at TEXT NOT NULL
+  );
 `);
 
 // Handle migration for existing databases missing the snapshot_path column

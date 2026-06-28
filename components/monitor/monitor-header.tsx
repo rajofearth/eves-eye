@@ -78,6 +78,16 @@ export function MonitorHeader({
           >
             Video_Analysis
           </Link>
+          <Link
+            href="/chat"
+            className={`font-mono text-[10px] font-bold uppercase tracking-wider transition-all pb-0.5 hover:text-foreground ${
+              pathname === "/chat"
+                ? "text-primary border-b-2 border-primary"
+                : "text-muted-foreground"
+            }`}
+          >
+            Intel_Chat
+          </Link>
         </nav>
       </div>
 
