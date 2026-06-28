@@ -8,7 +8,10 @@ import {
   RefreshCw,
   Shield,
   Sun,
+  Video,
 } from "lucide-react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { StatusIndicator } from "@/components/ui/status-dot";
 
 export interface MonitorHeaderProps {
@@ -28,6 +31,8 @@ export function MonitorHeader({
   setDarkMode,
   setShowThreatLogPanel,
 }: MonitorHeaderProps) {
+  const pathname = usePathname();
+
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card/45 backdrop-blur-md px-4 py-1.5 z-20">
       <div className="flex items-center gap-3">
@@ -52,6 +57,29 @@ export function MonitorHeader({
             ONLINE
           </StatusIndicator>
         )}
+
+        <nav className="flex items-center gap-4 ml-4 pl-4 border-l border-border/80">
+          <Link
+            href="/monitor"
+            className={`font-mono text-[10px] font-bold uppercase tracking-wider transition-all pb-0.5 hover:text-foreground ${
+              pathname === "/monitor"
+                ? "text-primary border-b-2 border-primary"
+                : "text-muted-foreground"
+            }`}
+          >
+            Live_Monitor
+          </Link>
+          <Link
+            href="/analysis"
+            className={`font-mono text-[10px] font-bold uppercase tracking-wider transition-all pb-0.5 hover:text-foreground ${
+              pathname === "/analysis"
+                ? "text-primary border-b-2 border-primary"
+                : "text-muted-foreground"
+            }`}
+          >
+            Video_Analysis
+          </Link>
+        </nav>
       </div>
 
       <div className="flex items-center gap-3">

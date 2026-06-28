@@ -129,16 +129,19 @@ export default function LiveMonitorPage() {
     let active = true;
     let activeStream: MediaStream | null = null;
 
-    setLogEntries((prev) => [
-      ...prev,
-      {
-        id: "sys-init",
-        timestamp: nowTimestamp(),
-        source: "SYS",
-        message:
-          "· EVE'S EYE system diagnostics active. Reallocating local resources...",
-      },
-    ]);
+    setLogEntries((prev) => {
+      if (prev.some((e) => e.id === "sys-init")) return prev;
+      return [
+        ...prev,
+        {
+          id: "sys-init",
+          timestamp: nowTimestamp(),
+          source: "SYS",
+          message:
+            "· EVE'S EYE system diagnostics active. Reallocating local resources...",
+        },
+      ];
+    });
 
     navigator.mediaDevices
       .getUserMedia({
@@ -153,20 +156,23 @@ export default function LiveMonitorPage() {
         if (active) {
           activeStream = mediaStream;
           setStream(mediaStream);
-          setLogEntries((prev) => [
-            ...prev,
-            {
-              id: "sys-stream-ok",
-              timestamp: nowTimestamp(),
-              source: "SYS",
-              message: (
-                <>
-                  · Browser webcam successfully mounted. stream descriptor:{" "}
-                  <IntelTag>1280x720@30FPS</IntelTag>
-                </>
-              ),
-            },
-          ]);
+          setLogEntries((prev) => {
+            if (prev.some((e) => e.id === "sys-stream-ok")) return prev;
+            return [
+              ...prev,
+              {
+                id: "sys-stream-ok",
+                timestamp: nowTimestamp(),
+                source: "SYS",
+                message: (
+                  <>
+                    · Browser webcam successfully mounted. stream descriptor:{" "}
+                    <IntelTag>1280x720@30FPS</IntelTag>
+                  </>
+                ),
+              },
+            ];
+          });
         } else {
           mediaStream.getTracks().forEach((track) => {
             track.stop();
@@ -178,41 +184,47 @@ export default function LiveMonitorPage() {
           const errMsg =
             err.message || "Permission denied or device not found.";
           setStreamError(errMsg);
-          setLogEntries((prev) => [
-            ...prev,
-            {
-              id: "sys-stream-err",
-              timestamp: nowTimestamp(),
-              source: "SYS",
-              message: `· Error loading browser webcam: ${errMsg}`,
-            },
-          ]);
+          setLogEntries((prev) => {
+            if (prev.some((e) => e.id === "sys-stream-err")) return prev;
+            return [
+              ...prev,
+              {
+                id: "sys-stream-err",
+                timestamp: nowTimestamp(),
+                source: "SYS",
+                message: `· Error loading browser webcam: ${errMsg}`,
+              },
+            ];
+          });
         }
       });
 
     // Seed initial logs
-    setLogEntries((prev) => [
-      ...prev,
-      {
-        id: "seed-1",
-        timestamp: nowTimestamp(),
-        source: "SYS",
-        message:
-          "· Gemma 4 Cloud Threat Analyzer Session Handler initializing...",
-      },
-      {
-        id: "seed-2",
-        timestamp: nowTimestamp(),
-        source: "SYS",
-        message: (
-          <>
-            · Live log registry stream online. Hooked to{" "}
-            <IntelTag>GEMMA_4_31B_VISION</IntelTag> and{" "}
-            <IntelTag>LOCAL_SQLITE_LOGS</IntelTag>
-          </>
-        ),
-      },
-    ]);
+    setLogEntries((prev) => {
+      if (prev.some((e) => e.id === "seed-1")) return prev;
+      return [
+        ...prev,
+        {
+          id: "seed-1",
+          timestamp: nowTimestamp(),
+          source: "SYS",
+          message:
+            "· Gemma 4 Cloud Threat Analyzer Session Handler initializing...",
+        },
+        {
+          id: "seed-2",
+          timestamp: nowTimestamp(),
+          source: "SYS",
+          message: (
+            <>
+              · Live log registry stream online. Hooked to{" "}
+              <IntelTag>GEMMA_4_31B_VISION</IntelTag> and{" "}
+              <IntelTag>LOCAL_SQLITE_LOGS</IntelTag>
+            </>
+          ),
+        },
+      ];
+    });
 
     return () => {
       active = false;
