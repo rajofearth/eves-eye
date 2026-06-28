@@ -68,6 +68,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS video_faces (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT NOT NULL,
+    frame_index INTEGER NOT NULL DEFAULT 0,
     face_id TEXT NOT NULL,
     avatar_path TEXT NOT NULL,
     timestamp_sec REAL NOT NULL
@@ -86,6 +87,13 @@ db.exec(`
 // Handle migration for existing databases missing the snapshot_path column
 try {
   db.exec("ALTER TABLE threats ADD COLUMN snapshot_path TEXT");
+} catch (_e) {
+  // Column already exists, safe to ignore
+}
+
+// Handle migration for existing databases missing frame_index on video_faces
+try {
+  db.exec("ALTER TABLE video_faces ADD COLUMN frame_index INTEGER NOT NULL DEFAULT 0");
 } catch (_e) {
   // Column already exists, safe to ignore
 }

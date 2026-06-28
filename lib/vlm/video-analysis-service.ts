@@ -119,8 +119,8 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
     jobId: string,
     frameIndex: number,
     faceBox: [number, number, number, number],
-    uniqueFaces: { faceId: string; path: string }[],
-  ): Promise<string | null> {
+    uniqueFaces: { faceId: string; avatarPath: string; diskPath: string }[],
+  ): Promise<{ faceId: string; avatarPath: string; diskPath: string } | null> {
     const metadata = await sharp(framePath).metadata();
     const width = metadata.width || 1280;
     const height = metadata.height || 720;
@@ -165,11 +165,12 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
       .resize(128, 128)
       .toFile(faceOutputPath);
 
-    const _avatarUrl = `/uploads/videos/${jobId}/faces/${faceFilename}`;
+    const avatarPath = `/uploads/videos/${jobId}/faces/${faceFilename}`;
+    const diskPath = faceOutputPath;
 
     // If there are no unique faces in portfolio, this is automatically Face #1 (UID-1)
     if (uniqueFaces.length === 0) {
-      return "UID-1";
+      return { faceId: "UID-1", avatarPath, diskPath };
     }
 
     // Call Gemma to match the face crop against the portfolio
@@ -181,7 +182,7 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
     const previousFacesContent = [];
     for (let i = 0; i < Math.min(uniqueFaces.length, 3); i++) {
       const uFace = uniqueFaces[i];
-      const uBuffer = await readFile(join(process.cwd(), "public", uFace.path));
+      const uBuffer = await readFile(uFace.diskPath);
       previousFacesContent.push({
         type: "text" as const,
         text: `Previous Face ${uFace.faceId}:`,
@@ -230,17 +231,17 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
     const content = (response as unknown as CerebrasResponse).choices?.[0]
       ?.message?.content;
     if (!content) {
-      return `UID-${uniqueFaces.length + 1}`;
+      return { faceId: `UID-${uniqueFaces.length + 1}`, avatarPath, diskPath };
     }
 
     try {
       const matchResult = JSON.parse(content);
       if (matchResult.match) {
-        return matchResult.match;
+        return { faceId: matchResult.match, avatarPath, diskPath };
       }
-      return `UID-${uniqueFaces.length + 1}`;
+      return { faceId: `UID-${uniqueFaces.length + 1}`, avatarPath, diskPath };
     } catch {
-      return `UID-${uniqueFaces.length + 1}`;
+      return { faceId: `UID-${uniqueFaces.length + 1}`, avatarPath, diskPath };
     }
   }
 
@@ -338,7 +339,11 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
       const files = await readdir(framesDir);
       const frameFiles = files.filter((f) => f.endsWith(".jpg")).sort();
 
-      const uniqueFaces: { faceId: string; path: string }[] = [];
+      const uniqueFaces: {
+        faceId: string;
+        avatarPath: string;
+        diskPath: string;
+      }[] = [];
 
       // 2. Loop and scan each frame
       for (let i = 0; i < frameFiles.length; i++) {
@@ -375,26 +380,25 @@ Do not write markdown wraps. Return ONLY the raw JSON string.`;
 
         // Process face detections
         for (const fBox of scanResult.faces) {
-          const faceId = await this.processFaceCrop(
+          const result = await this.processFaceCrop(
             framePath,
             jobId,
             frameIndex,
             fBox.box_2d,
             uniqueFaces,
           );
-          if (faceId) {
-            const faceFilename = `face_${frameIndex}_${Date.now()}.jpg`;
-            const path = `/uploads/videos/${jobId}/faces/${faceFilename}`;
+          if (result) {
+            const { faceId, avatarPath, diskPath } = result;
 
-            // Check if this faceId is already in our unique list
+            // Only add to unique list if we haven't seen this face identity before
             if (!uniqueFaces.some((uf) => uf.faceId === faceId)) {
-              uniqueFaces.push({ faceId, path });
+              uniqueFaces.push({ faceId, avatarPath, diskPath });
             }
 
             db.prepare(`
               INSERT INTO video_faces (job_id, frame_index, timestamp_sec, face_id, avatar_path)
               VALUES (?, ?, ?, ?, ?)
-            `).run(jobId, frameIndex, timestampSec, faceId, path);
+            `).run(jobId, frameIndex, timestampSec, faceId, avatarPath);
           }
         }
 
