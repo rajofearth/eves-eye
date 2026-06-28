@@ -41,6 +41,46 @@ db.exec(`
     raw_json TEXT,
     snapshot_path TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS video_jobs (
+    id TEXT PRIMARY KEY,
+    filename TEXT NOT NULL,
+    status TEXT NOT NULL,
+    total_frames INTEGER NOT NULL DEFAULT 0,
+    completed_frames INTEGER NOT NULL DEFAULT 0,
+    summary TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS video_detections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    frame_index INTEGER NOT NULL,
+    timestamp_sec REAL NOT NULL,
+    label TEXT NOT NULL,
+    x1 REAL NOT NULL,
+    y1 REAL NOT NULL,
+    x2 REAL NOT NULL,
+    y2 REAL NOT NULL,
+    confidence REAL NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS video_faces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    face_id TEXT NOT NULL,
+    avatar_path TEXT NOT NULL,
+    timestamp_sec REAL NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS video_threats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    start_sec REAL NOT NULL,
+    end_sec REAL NOT NULL,
+    severity TEXT NOT NULL,
+    reason TEXT NOT NULL
+  );
 `);
 
 // Handle migration for existing databases missing the snapshot_path column

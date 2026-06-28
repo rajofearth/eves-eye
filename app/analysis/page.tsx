@@ -2,17 +2,13 @@
 
 import {
   AlertTriangle,
-  ChevronRight,
   Clock,
-  Database,
   Download,
   Eye,
   FileText,
-  Maximize2,
   Moon,
   Pause,
   Play,
-  RefreshCw,
   Shield,
   Sparkles,
   Sun,
@@ -23,14 +19,11 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type * as React from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { MonoLabel } from "@/components/ui/mono-label";
-import { StatusDot, StatusIndicator } from "@/components/ui/status-dot";
+import { StatusDot } from "@/components/ui/status-dot";
 
-// ---------------------------------------------------------------------------
-// Mock Constants
-// ---------------------------------------------------------------------------
 interface PipelineStep {
   id: string;
   label: string;
@@ -41,75 +34,41 @@ interface PipelineStep {
 
 interface FaceCrop {
   id: string;
-  label: string | null;
-  status: "processed" | "critical" | "processing" | "empty";
-  avatarCode: string;
+  faceId: string;
+  avatarPath: string;
+  timestampSec: number;
 }
 
-interface EventRow {
-  time: string;
-  cam: string;
-  cls: string;
-  conf: string;
-  note: string;
-  tone: "normal" | "warning" | "critical";
-  seconds: number;
+interface DBVideoDetection {
+  id: number;
+  frameIndex: number;
+  timestampSec: number;
+  label: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  confidence: number;
 }
 
-const MOCK_EVENTS: EventRow[] = [
-  {
-    time: "14:21:10.05",
-    cam: "NORTH_ENT",
-    cls: "PERSON",
-    conf: "0.94",
-    note: "SUBJECT SPOTTED IN REAR PARKING CORRIDOR.",
-    tone: "normal",
-    seconds: 15,
-  },
-  {
-    time: "14:21:45.22",
-    cam: "NORTH_ENT",
-    cls: "SUSPICIOUS",
-    conf: "0.88",
-    note: "SUBJECT LOITERING NEAR ACCESS DOOR B. CROWBAR IDENTIFIED.",
-    tone: "critical",
-    seconds: 40,
-  },
-  {
-    time: "14:22:01.00",
-    cam: "NORTH_ENT",
-    cls: "VEHICLE",
-    conf: "0.91",
-    note: "WHITE UTILITY VAN PARKED IN IDLE ZONE.",
-    tone: "warning",
-    seconds: 65,
-  },
-  {
-    time: "14:22:04.15",
-    cam: "NORTH_ENT",
-    cls: "PERSON",
-    conf: "0.96",
-    note: "CO-CONSPIRATOR SPOTTED ENTERING SCANNING FRAME.",
-    tone: "normal",
-    seconds: 85,
-  },
-];
+interface DBVideoThreat {
+  id: number;
+  startSec: number;
+  endSec: number;
+  severity: "warning" | "critical";
+  reason: string;
+}
 
 export default function AnalysisPage() {
   const pathname = usePathname();
-  // --- Page States ---
-  const [selectedVideoName, setSelectedVideoName] = useState<string | null>(
-    null,
-  );
-  const [uploadPhase, setUploadPhase] = useState<
-    "idle" | "uploading" | "extracting" | "analyzing" | "completed"
-  >("idle");
-  const [pipelineProgress, setPipelineProgress] = useState<number>(0);
-  const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [currentTime, setCurrentTime] = useState<number>(0);
-  const [utcTime, setUtcTime] = useState<string>("");
   const [showToast, setShowToast] = useState<string | null>(null);
-  const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null);
+
+  const triggerToast = useCallback((msg: string) => {
+    setShowToast(msg);
+    setTimeout(() => setShowToast(null), 3000);
+  }, []);
+
+  // --- Theme State ---
   const [darkMode, setDarkMode] = useState<boolean>(true);
 
   // Sync dark class on root html tag
@@ -121,10 +80,40 @@ export default function AnalysisPage() {
     }
   }, [darkMode]);
 
-  const videoIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // --- Real Job States ---
+  const [selectedVideoFile, setSelectedVideoFile] = useState<File | null>(null);
+  const [selectedVideoUrl, setSelectedVideoUrl] = useState<string | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [uploadPhase, setUploadPhase] = useState<
+    | "idle"
+    | "uploading"
+    | "pending"
+    | "extracting"
+    | "analyzing"
+    | "summarizing"
+    | "completed"
+    | "error"
+  >("idle");
 
-  // --- Clock updates ---
+  const [pipelineProgress, setPipelineProgress] = useState<number>(0);
+  const [detections, setDetections] = useState<DBVideoDetection[]>([]);
+  const [faces, setFaces] = useState<FaceCrop[]>([]);
+  const [threats, setThreats] = useState<DBVideoThreat[]>([]);
+  const [vlmSummary, setVlmSummary] = useState<string>("");
+  const [totalFrames, setTotalFrames] = useState<number>(0);
+  const [completedFrames, setCompletedFrames] = useState<number>(0);
+
+  // --- Video Player States ---
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  const [currentTime, setCurrentTime] = useState<number>(0);
+  const [duration, setDuration] = useState<number>(0);
+
+  const [utcTime, setUtcTime] = useState<string>("");
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // --- UTC Clock ---
   useEffect(() => {
     const updateClock = () => {
       const d = new Date();
@@ -135,104 +124,169 @@ export default function AnalysisPage() {
     return () => clearInterval(timer);
   }, []);
 
-  // --- Mock Pipeline Process Animation ---
-  const startMockPipeline = (filename: string) => {
-    setSelectedVideoName(filename);
+  // --- Poll Job Status ---
+  useEffect(() => {
+    if (
+      !activeJobId ||
+      uploadPhase === "completed" ||
+      uploadPhase === "error"
+    ) {
+      return;
+    }
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/analysis/status?jobId=${activeJobId}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        if (data.ok) {
+          const status = data.job.status;
+          setUploadPhase(status);
+          setTotalFrames(data.job.totalFrames || 0);
+          setCompletedFrames(data.job.completedFrames || 0);
+          setDetections(data.detections || []);
+          setFaces(data.faces || []);
+          setThreats(data.threats || []);
+
+          // Update progress metrics
+          if (status === "extracting") {
+            setPipelineProgress(30);
+          } else if (status === "analyzing") {
+            const pct = Math.round(
+              (data.job.completedFrames / Math.max(data.job.totalFrames, 1)) *
+                100,
+            );
+            setPipelineProgress(pct);
+          } else if (status === "summarizing") {
+            setPipelineProgress(95);
+          } else if (status === "completed") {
+            setPipelineProgress(100);
+            setVlmSummary(data.job.summary || "");
+            triggerToast("VIDEO ANALYSIS COMPLETE");
+          }
+        }
+      } catch (err) {
+        console.error("Polling error:", err);
+      }
+    };
+
+    // Poll every 1.5 seconds
+    poll();
+    const interval = setInterval(poll, 1500);
+    return () => clearInterval(interval);
+  }, [activeJobId, uploadPhase, triggerToast]);
+
+  // --- Upload Video Form Action ---
+  const handleUploadVideo = async (file: File) => {
+    setSelectedVideoFile(file);
     setUploadPhase("uploading");
     setPipelineProgress(0);
 
-    let progress = 0;
-    const uploadInterval = setInterval(() => {
-      progress += 15;
-      if (progress >= 100) {
-        clearInterval(uploadInterval);
-        setUploadPhase("extracting");
-        setPipelineProgress(50);
+    // Generate local preview URL
+    const previewUrl = URL.createObjectURL(file);
+    setSelectedVideoUrl(previewUrl);
 
-        // Extraction phase
-        setTimeout(() => {
-          setUploadPhase("analyzing");
-          setPipelineProgress(75);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
 
-          // Analysis phase
-          let analysisProgress = 75;
-          const analysisInterval = setInterval(() => {
-            analysisProgress += 5;
-            setPipelineProgress(analysisProgress);
-            if (analysisProgress >= 100) {
-              clearInterval(analysisInterval);
-              setUploadPhase("completed");
-              setIsPlaying(true);
-            }
-          }, 300);
-        }, 1200);
+      const res = await fetch("/api/analysis/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) throw new Error("Upload failed");
+      const data = await res.json();
+
+      if (data.ok) {
+        setActiveJobId(data.jobId);
+        setUploadPhase("pending");
+        triggerToast("PAYLOAD MOUNTED: Starting background processing");
       } else {
-        setPipelineProgress(progress);
+        throw new Error(data.error || "Failed to initialize analysis");
       }
-    }, 150);
+    } catch (err) {
+      setUploadPhase("error");
+      const errMsg = err instanceof Error ? err.message : String(err);
+      setVlmSummary(`Failed to process upload: ${errMsg}`);
+    }
   };
 
   const handleFileDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     const file = e.dataTransfer.files?.[0];
     if (file) {
-      startMockPipeline(file.name.toUpperCase());
+      void handleUploadVideo(file);
     }
   };
 
   const handleFileBrowse = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      startMockPipeline(file.name.toUpperCase());
+      void handleUploadVideo(file);
     }
   };
 
-  // --- Simulated Video Player Playback ---
-  useEffect(() => {
-    if (isPlaying && uploadPhase === "completed") {
-      videoIntervalRef.current = setInterval(() => {
-        setCurrentTime((prev) => {
-          if (prev >= 100) {
-            return 0; // Loop video
-          }
-          return prev + 1;
-        });
-      }, 200);
+  // --- Video Element Sync ---
+  const togglePlay = () => {
+    if (!videoRef.current) return;
+    if (isPlaying) {
+      videoRef.current.pause();
+      setIsPlaying(false);
     } else {
-      if (videoIntervalRef.current) {
-        clearInterval(videoIntervalRef.current);
-      }
+      void videoRef.current.play();
+      setIsPlaying(true);
     }
+  };
 
-    return () => {
-      if (videoIntervalRef.current) {
-        clearInterval(videoIntervalRef.current);
-      }
-    };
-  }, [isPlaying, uploadPhase]);
+  const handleTimeUpdate = () => {
+    if (videoRef.current) {
+      setCurrentTime(videoRef.current.currentTime);
+    }
+  };
 
-  // --- Reset/Fresh actions ---
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      setDuration(videoRef.current.duration);
+    }
+  };
+
+  const handleSeek = (newTime: number) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = newTime;
+      setCurrentTime(newTime);
+    }
+  };
+
   const handleReset = () => {
-    setSelectedVideoName(null);
+    if (selectedVideoUrl) {
+      URL.revokeObjectURL(selectedVideoUrl);
+    }
+    setSelectedVideoFile(null);
+    setSelectedVideoUrl(null);
+    setActiveJobId(null);
     setUploadPhase("idle");
     setPipelineProgress(0);
+    setDetections([]);
+    setFaces([]);
+    setThreats([]);
+    setVlmSummary("");
     setIsPlaying(false);
     setCurrentTime(0);
+    setDuration(0);
   };
 
-  const triggerToast = (msg: string) => {
-    setShowToast(msg);
-    setTimeout(() => setShowToast(null), 3000);
-  };
-
-  // --- Build Dynamic Pipeline Steps ---
+  // --- Dynamic Pipeline Steps ---
   const pipelineSteps = useMemo<PipelineStep[]>(() => {
     const isDone = (phase: typeof uploadPhase) => {
       const order = [
         "idle",
         "uploading",
+        "pending",
         "extracting",
         "analyzing",
+        "summarizing",
         "completed",
       ];
       return order.indexOf(uploadPhase) > order.indexOf(phase);
@@ -260,7 +314,6 @@ export default function AnalysisPage() {
           : isActive("extracting")
             ? "active"
             : "pending",
-        progress: isActive("extracting") ? 50 : undefined,
       },
       {
         id: "analyzing",
@@ -282,49 +335,28 @@ export default function AnalysisPage() {
     ];
   }, [uploadPhase, pipelineProgress]);
 
-  // --- Face crops mock ---
-  const faceCrops = useMemo<FaceCrop[]>(() => {
-    if (uploadPhase === "idle" || uploadPhase === "uploading") {
-      return Array(3).fill({ status: "empty", label: null, avatarCode: "" });
+  // --- Active Frame Bounding Boxes ---
+  const activeDetections = useMemo(() => {
+    const floorTime = Math.floor(currentTime);
+    // Filter active bounding boxes for the current second
+    return detections.filter(
+      (d) => d.frameIndex === floorTime && d.x1 > 0 && d.y1 > 0,
+    );
+  }, [detections, currentTime]);
+
+  // --- Deduplicated Face gallery ---
+  const uniqueFaceCrops = useMemo(() => {
+    const uniqueMap = new Map<string, FaceCrop>();
+    for (const f of faces) {
+      uniqueMap.set(f.faceId, f);
     }
-    if (uploadPhase === "extracting" || uploadPhase === "analyzing") {
-      return [
-        {
-          id: "face-1",
-          status: "processed",
-          label: "UID: P-4921",
-          avatarCode: "F1",
-        },
-        {
-          id: "face-2",
-          status: "processing",
-          label: "ANALYZING...",
-          avatarCode: "F2",
-        },
-        { id: "face-3", status: "empty", label: null, avatarCode: "" },
-      ];
-    }
-    return [
-      {
-        id: "face-1",
-        status: "processed",
-        label: "UID: P-4921",
-        avatarCode: "F1",
-      },
-      {
-        id: "face-2",
-        status: "critical",
-        label: "UID: UNKNOWN",
-        avatarCode: "XX",
-      },
-      {
-        id: "face-3",
-        status: "processed",
-        label: "UID: P-5510",
-        avatarCode: "F3",
-      },
-    ];
-  }, [uploadPhase]);
+    return Array.from(uniqueMap.values());
+  }, [faces]);
+
+  // --- Export Report Action ---
+  const handleExportReport = () => {
+    triggerToast("INTELLIGENCE REPORT EXPORTED");
+  };
 
   return (
     <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-background font-sans text-foreground transition-colors duration-300">
@@ -407,8 +439,8 @@ export default function AnalysisPage() {
             </MonoLabel>
 
             {/* Drop zone */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: Drag and drop container */}
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: Mock dropzone upload button */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: Drag and drop video container */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: Double click upload option */}
             <div
               onDragOver={(e) => e.preventDefault()}
               onDrop={handleFileDrop}
@@ -416,12 +448,12 @@ export default function AnalysisPage() {
               className="border border-dashed border-border hover:border-primary/50 hover:bg-primary/5 transition-all bg-zinc-950/15 p-6 flex flex-col items-center justify-center text-center gap-2 cursor-pointer h-32 rounded-sm select-none"
             >
               <Upload
-                className={`w-7 h-7 text-muted-foreground ${uploadPhase === "uploading" ? "animate-bounce text-primary" : ""}`}
+                className={`w-7 h-7 text-muted-foreground ${uploadPhase !== "idle" && uploadPhase !== "completed" && uploadPhase !== "error" ? "animate-bounce text-primary" : ""}`}
               />
               <span className="text-[10px] font-mono text-zinc-400 leading-normal max-w-[200px] uppercase">
-                {selectedVideoName ? (
+                {selectedVideoFile ? (
                   <span className="text-primary font-bold">
-                    {selectedVideoName}
+                    {selectedVideoFile.name.toUpperCase()}
                   </span>
                 ) : (
                   <>
@@ -442,7 +474,7 @@ export default function AnalysisPage() {
             </div>
 
             {/* Action buttons */}
-            {selectedVideoName && (
+            {selectedVideoFile && (
               <div className="flex items-center justify-between pt-2.5 border-t border-border/60">
                 <button
                   type="button"
@@ -454,7 +486,7 @@ export default function AnalysisPage() {
                 <span className="text-border/60">|</span>
                 <button
                   type="button"
-                  onClick={() => startMockPipeline(selectedVideoName)}
+                  onClick={() => handleUploadVideo(selectedVideoFile)}
                   className="text-[9px] font-mono font-bold text-muted-foreground hover:text-white uppercase tracking-wider transition-colors cursor-pointer"
                 >
                   Fresh Run
@@ -481,7 +513,7 @@ export default function AnalysisPage() {
               >
                 Analysis Pipeline
               </MonoLabel>
-              {selectedVideoName && (
+              {activeJobId && (
                 <span className="px-1.5 py-0.5 bg-muted border border-border text-[8px] font-mono text-muted-foreground rounded-xs leading-none">
                   {uploadPhase === "completed"
                     ? "IDLE_COMPLETE"
@@ -552,81 +584,101 @@ export default function AnalysisPage() {
             {/* Header toolbar */}
             <div className="h-8 border-b border-border bg-muted/40 px-3 flex items-center justify-between shrink-0">
               <span className="font-mono text-[9px] text-zinc-300 font-bold uppercase tracking-wider">
-                {selectedVideoName
-                  ? `MEDIA_FEED // ${selectedVideoName}`
+                {selectedVideoFile
+                  ? `MEDIA_FEED // ${selectedVideoFile.name.toUpperCase()}`
                   : "PLAYER_AWAITING_INPUT"}
               </span>
               <div className="flex items-center gap-2">
                 <StatusDot
-                  variant={uploadPhase === "completed" ? "nominal" : "silver"}
-                  pulse={uploadPhase !== "idle"}
+                  variant={
+                    uploadPhase === "completed"
+                      ? "nominal"
+                      : uploadPhase === "error"
+                        ? "critical"
+                        : "silver"
+                  }
+                  pulse={
+                    uploadPhase !== "idle" &&
+                    uploadPhase !== "completed" &&
+                    uploadPhase !== "error"
+                  }
                   size="xs"
                 />
                 <span className="font-mono text-[8px] text-muted-foreground uppercase leading-none">
-                  {uploadPhase.toUpperCase()}
+                  {uploadPhase.toUpperCase()}{" "}
+                  {completedFrames > 0 && uploadPhase === "analyzing"
+                    ? `(${completedFrames}/${totalFrames})`
+                    : ""}
                 </span>
               </div>
             </div>
 
             {/* Video Screen Container */}
-            <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden group">
-              {selectedVideoName ? (
+            <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden">
+              {selectedVideoUrl ? (
                 <>
-                  {/* Simulated surveillance grid lines */}
-                  <div
-                    className="absolute inset-margin border border-white/5 pointer-events-none z-10"
-                    style={{ margin: "24px" }}
+                  {/* Bounding box highlights */}
+                  {activeDetections.map((det) => {
+                    const left = det.x1 / 10;
+                    const top = det.y1 / 10;
+                    const width = (det.x2 - det.x1) / 10;
+                    const height = (det.y2 - det.y1) / 10;
+
+                    return (
+                      <div
+                        key={det.id}
+                        className="absolute border-2 border-primary bg-primary/5 rounded-xs pointer-events-none transition-all duration-100 z-10"
+                        style={{
+                          left: `${left}%`,
+                          top: `${top}%`,
+                          width: `${width}%`,
+                          height: `${height}%`,
+                        }}
+                      >
+                        <div className="absolute top-0 left-0 bg-primary px-1.5 py-0.5 text-primary-foreground font-mono text-[8px] font-bold uppercase tracking-wider translate-y-[-100%] rounded-t-xs">
+                          {det.label} {Math.round(det.confidence * 100)}%
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* HTML5 Video element */}
+                  {/* biome-ignore lint/a11y/useMediaCaption: Mock internal overlay handles audio output visually */}
+                  <video
+                    ref={videoRef}
+                    src={selectedVideoUrl}
+                    onTimeUpdate={handleTimeUpdate}
+                    onLoadedMetadata={handleLoadedMetadata}
+                    onClick={togglePlay}
+                    className="w-full h-full object-contain cursor-pointer"
                   />
-                  <div className="absolute top-8 left-8 text-primary/60 font-mono text-[8px] tracking-widest z-10">
-                    CAM-02-NORTH // ANALYZING_VLM
-                  </div>
-                  <div className="absolute top-8 right-8 text-primary/60 font-mono text-[8px] tracking-widest z-10">
-                    24-FRAME_BUFFER
-                  </div>
 
-                  {/* Pulsing REC indicator */}
-                  <div className="absolute bottom-8 left-8 flex items-center gap-1.5 z-10">
-                    <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                    <span className="font-mono text-[8px] text-red-500 font-bold">
-                      ANALYZING
-                    </span>
-                  </div>
-
-                  <div className="absolute bottom-8 right-8 text-zinc-500 font-mono text-[8px] z-10">
-                    TIME_REF: {currentTime}s / 100s
-                  </div>
-
-                  {/* Bounding box mock highlights - visible when playing */}
-                  {currentTime >= 10 && currentTime <= 40 && (
-                    <div className="absolute top-[28%] left-[40%] w-36 h-60 border-2 border-primary bg-primary/5 rounded-xs pointer-events-none transition-all duration-100 z-10">
-                      <div className="absolute top-0 left-0 bg-primary px-1.5 py-0.5 text-primary-foreground font-mono text-[8px] font-bold uppercase tracking-wider translate-y-[-100%] rounded-t-xs">
-                        PERSON 94%
-                      </div>
-                    </div>
-                  )}
-
-                  {currentTime >= 35 && currentTime <= 75 && (
-                    <div className="absolute top-[40%] left-[18%] w-28 h-44 border-2 border-red-500 bg-red-500/5 rounded-xs pointer-events-none transition-all duration-100 z-10">
-                      <div className="absolute top-0 left-0 bg-red-500 px-1.5 py-0.5 text-white font-mono text-[8px] font-bold uppercase tracking-wider translate-y-[-100%] rounded-t-xs flex items-center gap-1">
-                        <AlertTriangle className="w-2.5 h-2.5" />
-                        CRITICAL: CROWBAR 88%
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Dark placeholders representing video feed */}
-                  <div className="w-full h-full bg-radial from-zinc-900 to-black flex items-center justify-center opacity-85 select-none">
-                    <div className="flex flex-col items-center gap-3 text-center">
-                      <Video className="w-10 h-10 text-primary/40 animate-pulse" />
-                      <span className="font-mono text-[10px] text-zinc-400 uppercase tracking-widest leading-normal">
-                        SURVEILLANCE_PAYLOAD_MOUNTED
-                        <br />
-                        <span className="text-[8px] text-muted-foreground">
-                          SCANNING COGNITIVE FRAMES
+                  {/* Warning Overlay Card if threat active */}
+                  {threats.some(
+                    (t) =>
+                      currentTime >= t.startSec &&
+                      currentTime <= t.endSec &&
+                      t.severity === "critical",
+                  ) && (
+                    <div className="absolute bottom-12 left-4 border border-red-500 bg-red-950/80 backdrop-blur-md p-3 max-w-xs z-10 rounded-md shadow-2xl animate-in slide-in-from-left duration-200">
+                      <div className="flex items-center gap-2 mb-1">
+                        <AlertTriangle className="w-4 h-4 text-red-500 animate-pulse" />
+                        <span className="font-mono text-2xs font-bold text-red-400 uppercase">
+                          ACTIVE_THREAT_DETECTED
                         </span>
-                      </span>
+                      </div>
+                      <p className="font-mono text-[9px] text-zinc-200 uppercase leading-normal">
+                        {
+                          threats.find(
+                            (t) =>
+                              currentTime >= t.startSec &&
+                              currentTime <= t.endSec &&
+                              t.severity === "critical",
+                          )?.reason
+                        }
+                      </p>
                     </div>
-                  </div>
+                  )}
                 </>
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-center p-6 select-none bg-zinc-950/40">
@@ -643,10 +695,10 @@ export default function AnalysisPage() {
             </div>
 
             {/* Custom Video Controls bar */}
-            {selectedVideoName && uploadPhase === "completed" && (
+            {selectedVideoUrl && (
               <div className="h-10 border-t border-border bg-muted/30 px-3 flex items-center gap-3 shrink-0">
                 <button
-                  onClick={() => setIsPlaying(!isPlaying)}
+                  onClick={togglePlay}
                   className="p-1 rounded-sm hover:bg-muted text-zinc-300 hover:text-white transition-colors cursor-pointer"
                   type="button"
                   title={isPlaying ? "Pause Feed" : "Play Feed"}
@@ -663,39 +715,46 @@ export default function AnalysisPage() {
                   <input
                     type="range"
                     min="0"
-                    max="100"
+                    max={duration || 100}
+                    step="0.1"
                     value={currentTime}
-                    onChange={(e) => {
-                      setCurrentTime(Number(e.target.value));
-                      setIsPlaying(false); // pause on scrubbing
-                    }}
-                    className="w-full h-1 bg-border rounded-lg appearance-none cursor-pointer accent-primary focus:outline-none"
+                    onChange={(e) => handleSeek(Number(e.target.value))}
+                    className="w-full h-1 bg-border rounded-lg appearance-none cursor-pointer accent-primary focus:outline-none z-10"
                   />
 
-                  {/* Event markers on timeline */}
-                  <div
-                    className="absolute left-[15%] w-1.5 h-1.5 rounded-full bg-primary/70 pointer-events-none"
-                    title="Event spotted (15s)"
-                  />
-                  <div
-                    className="absolute left-[40%] w-1.5 h-1.5 rounded-full bg-red-500/80 pointer-events-none"
-                    title="Threat spotted (40s)"
-                  />
-                  <div
-                    className="absolute left-[65%] w-1.5 h-1.5 rounded-full bg-amber-500/70 pointer-events-none"
-                    title="Vehicle spotted (65s)"
-                  />
+                  {/* Warning/Threat segments on timeline */}
+                  {threats.map((t) => {
+                    const maxTime = duration || 100;
+                    const left = (t.startSec / maxTime) * 100;
+                    const width = ((t.endSec - t.startSec) / maxTime) * 100;
+                    const color =
+                      t.severity === "critical"
+                        ? "bg-red-500/40"
+                        : "bg-amber-500/40";
+
+                    return (
+                      <div
+                        key={t.id}
+                        className={`absolute h-1 top-[11px] rounded-lg ${color} pointer-events-none`}
+                        style={{
+                          left: `${left}%`,
+                          width: `${width}%`,
+                        }}
+                        title={`${t.severity.toUpperCase()}: ${t.reason}`}
+                      />
+                    );
+                  })}
                 </div>
 
                 <span className="font-mono text-[9px] text-zinc-400 select-none">
-                  {currentTime}s / 100s
+                  {Math.floor(currentTime)}s / {Math.floor(duration)}s
                 </span>
               </div>
             )}
           </div>
 
-          {/* VLM Summary strip (only visible when analysis completes) */}
-          {uploadPhase === "completed" && (
+          {/* VLM Summary strip */}
+          {vlmSummary && (
             <div className="border border-border bg-card/65 rounded-md p-4 shrink-0 shadow-xs">
               <div className="flex items-center justify-between mb-1.5">
                 <span className="font-mono text-[9px] text-zinc-400 font-bold uppercase tracking-wider">
@@ -707,10 +766,7 @@ export default function AnalysisPage() {
                 </span>
               </div>
               <p className="font-mono text-[10px] leading-relaxed text-zinc-300 uppercase tracking-wide">
-                SURVEILLANCE INTEL: Captured a subject loitering near restricted
-                access door B. Verified item held matches crowbar dimensions.
-                Co-conspirator spotted entering east corridor at 14:22:04.
-                Synced local index references to threat log database.
+                {vlmSummary}
               </p>
             </div>
           )}
@@ -723,58 +779,42 @@ export default function AnalysisPage() {
                 <span className="font-mono text-[9px] text-zinc-300 font-bold uppercase tracking-wider">
                   Face Track Cluster
                 </span>
-                <span className="material-symbols-outlined text-[14px] text-muted-foreground">
-                  <UserCheck className="w-3.5 h-3.5 text-primary" />
-                </span>
+                <UserCheck className="w-3.5 h-3.5 text-primary" />
               </div>
 
               <div className="flex-1 p-3 grid grid-cols-3 gap-2 overflow-y-auto content-start">
-                {faceCrops.map((crop, idx) => (
-                  <div
-                    // biome-ignore lint/suspicious/noArrayIndexKey: static mock array
-                    key={`face-${idx}`}
-                    className={`aspect-square border rounded-md relative flex flex-col items-center justify-center bg-zinc-950/15 ${
-                      crop.status === "critical"
-                        ? "border-red-500/35 bg-red-950/10"
-                        : crop.status === "processed"
-                          ? "border-primary/25"
-                          : crop.status === "processing"
-                            ? "border-amber-500/25 animate-pulse"
-                            : "border-border/30"
-                    }`}
+                {uniqueFaceCrops.map((crop) => (
+                  <button
+                    key={crop.id}
+                    onClick={() => handleSeek(crop.timestampSec)}
+                    className="aspect-square border rounded-md relative flex flex-col items-center justify-center bg-zinc-950/15 border-primary/25 hover:border-primary transition-all cursor-pointer group"
+                    type="button"
+                    title={`Jump to frame ${crop.timestampSec}s`}
                   >
-                    {crop.status === "empty" ? (
-                      <div className="font-mono text-[7px] text-muted-foreground uppercase">
-                        EMPTY_SLOT
-                      </div>
-                    ) : crop.status === "processing" ? (
-                      <div className="font-mono text-[7px] text-amber-500 font-bold uppercase tracking-wider text-center px-1">
-                        EXTRACTING
-                      </div>
-                    ) : (
-                      <>
-                        <div
-                          className={`w-8 h-8 rounded-full border flex items-center justify-center font-mono font-bold text-xs ${
-                            crop.status === "critical"
-                              ? "bg-red-500/20 border-red-500 text-red-400"
-                              : "bg-primary/20 border-primary text-primary"
-                          }`}
-                        >
-                          {crop.avatarCode}
-                        </div>
-                        <div
-                          className={`absolute bottom-0 w-full text-center py-0.5 rounded-b-md font-mono text-[7px] font-bold ${
-                            crop.status === "critical"
-                              ? "bg-red-950/80 text-red-400 border-t border-red-500/20"
-                              : "bg-muted/80 text-zinc-400 border-t border-border/30"
-                          }`}
-                        >
-                          {crop.label}
-                        </div>
-                      </>
-                    )}
-                  </div>
+                    {/* biome-ignore lint/performance/noImgElement: cropped face image from local sharp output */}
+                    <img
+                      src={crop.avatarPath}
+                      alt={crop.faceId}
+                      className="w-10 h-10 rounded-full border border-primary/10 object-cover"
+                    />
+                    <div className="absolute bottom-0 w-full text-center py-0.5 rounded-b-md font-mono text-[7px] font-bold bg-muted/80 text-zinc-400 border-t border-border/30">
+                      {crop.faceId}
+                    </div>
+                  </button>
                 ))}
+                {uploadPhase === "analyzing" && (
+                  <div className="aspect-square border rounded-md relative flex flex-col items-center justify-center bg-zinc-950/15 border-amber-500/25 animate-pulse">
+                    <div className="font-mono text-[7px] text-amber-500 font-bold uppercase tracking-wider text-center px-1">
+                      SCANNING...
+                    </div>
+                  </div>
+                )}
+                {uniqueFaceCrops.length === 0 &&
+                  uploadPhase !== "analyzing" && (
+                    <div className="col-span-3 text-center py-8 font-mono text-[8px] text-muted-foreground uppercase">
+                      NO_FACES_ARCHIVED
+                    </div>
+                  )}
               </div>
             </div>
 
@@ -787,9 +827,7 @@ export default function AnalysisPage() {
 
                 {uploadPhase === "completed" && (
                   <button
-                    onClick={() =>
-                      triggerToast("REPORT EXPORTED: check public/reports/")
-                    }
+                    onClick={handleExportReport}
                     className="bg-primary text-primary-foreground px-2 py-0.5 text-[9px] font-mono font-bold uppercase tracking-wider rounded-xs hover:bg-primary/95 transition-all flex items-center gap-1.5 cursor-pointer"
                     type="button"
                   >
@@ -802,59 +840,67 @@ export default function AnalysisPage() {
               {/* Table header */}
               <div className="grid grid-cols-12 gap-2 px-3 py-1.5 border-b border-border bg-muted/20 font-mono text-[8px] text-muted-foreground uppercase tracking-wider shrink-0 select-none">
                 <div className="col-span-2">TIME</div>
-                <div className="col-span-2">CAMERA</div>
                 <div className="col-span-2">CLASS</div>
                 <div className="col-span-1 text-right">CONF</div>
-                <div className="col-span-5 pl-3">VLM NOTE</div>
+                <div className="col-span-7 pl-3">INTELLIGENCE LOG NOTE</div>
               </div>
 
               {/* Table body */}
               <div className="flex-1 overflow-y-auto font-mono text-[9px]">
-                {uploadPhase === "idle" ? (
+                {detections.length === 0 ? (
                   <div className="flex h-full items-center justify-center select-none">
                     <span className="font-mono text-[8px] text-muted-foreground/50 uppercase">
                       AWAITING_PIPELINE_INIT...
                     </span>
                   </div>
                 ) : (
-                  MOCK_EVENTS.map((row) => {
+                  detections.map((row) => {
                     const isPassed =
-                      currentTime >= row.seconds || uploadPhase === "completed";
+                      currentTime >= row.timestampSec ||
+                      uploadPhase === "completed";
                     if (!isPassed) return null;
+
+                    // Deduce warning/critical colors based on timeline threats
+                    const matchedThreat = threats.find(
+                      (t) =>
+                        row.timestampSec >= t.startSec &&
+                        row.timestampSec <= t.endSec,
+                    );
+                    const tone =
+                      matchedThreat?.severity === "critical"
+                        ? "critical"
+                        : matchedThreat?.severity === "warning"
+                          ? "warning"
+                          : "normal";
 
                     return (
                       <button
                         type="button"
-                        key={`${row.time}-${row.cls}`}
-                        onClick={() => {
-                          setCurrentTime(row.seconds);
-                          setIsPlaying(false);
-                        }}
+                        key={row.id}
+                        onClick={() => handleSeek(row.timestampSec)}
                         className={`grid grid-cols-12 gap-2 px-3 py-1.5 border-b border-border/40 items-center relative transition-colors cursor-pointer w-full text-left font-mono text-[9px] ${
-                          row.tone === "critical"
+                          tone === "critical"
                             ? "bg-red-950/20 hover:bg-red-950/35 text-red-400"
-                            : row.tone === "warning"
+                            : tone === "warning"
                               ? "bg-amber-950/20 hover:bg-amber-950/35 text-amber-400"
                               : "hover:bg-muted/15 text-zinc-300"
                         }`}
                       >
-                        <div className="col-span-2">{row.time}</div>
-                        <div className="col-span-2 truncate text-zinc-400">
-                          {row.cam}
+                        <div className="col-span-2">
+                          {Math.floor(row.timestampSec)}s
                         </div>
                         <div
-                          className={`col-span-2 font-bold ${row.tone === "critical" ? "text-red-500 animate-pulse" : ""}`}
+                          className={`col-span-2 font-bold ${tone === "critical" ? "text-red-500 animate-pulse" : ""}`}
                         >
-                          {row.cls}
+                          {row.label}
                         </div>
                         <div className="col-span-1 text-right text-zinc-400">
-                          {row.conf}
+                          {Math.round(row.confidence * 100)}%
                         </div>
-                        <div
-                          className="col-span-5 pl-3 truncate text-zinc-400"
-                          title={row.note}
-                        >
-                          {row.note}
+                        <div className="col-span-7 pl-3 truncate text-zinc-400">
+                          {matchedThreat
+                            ? matchedThreat.reason
+                            : `Object ${row.label.toLowerCase()} detected in media stream.`}
                         </div>
                       </button>
                     );

@@ -1,34 +1,39 @@
-"use client"
+"use client";
 
-import * as React from "react"
-import { useState, useMemo } from "react"
-import { AlertTriangle, History, RefreshCw, X, ChevronRight } from "lucide-react"
-import { MonoLabel } from "@/components/ui/mono-label"
-import { StatusDot } from "@/components/ui/status-dot"
+import {
+  AlertTriangle,
+  ChevronRight,
+  History,
+  RefreshCw,
+  X,
+} from "lucide-react";
+import { useMemo, useState } from "react";
+import { MonoLabel } from "@/components/ui/mono-label";
+import { StatusDot } from "@/components/ui/status-dot";
 
 export interface SQLiteThreatLog {
-  id: number
-  timestamp: string
-  camera_id: string
-  is_harm: number
-  severity: string
-  reason: string
-  snapshot_path: string | null
+  id: number;
+  timestamp: string;
+  camera_id: string;
+  is_harm: number;
+  severity: string;
+  reason: string;
+  snapshot_path: string | null;
 }
 
 export interface ThreatsDrawerProps {
-  readonly showThreatLogPanel: boolean
-  readonly setShowThreatLogPanel: (val: boolean) => void
-  readonly threatLogList: readonly SQLiteThreatLog[]
-  readonly loadingThreatLog: boolean
-  readonly fetchThreatLog: () => void
-  readonly setZoomImageUrl: (url: string | null) => void
+  readonly showThreatLogPanel: boolean;
+  readonly setShowThreatLogPanel: (val: boolean) => void;
+  readonly threatLogList: readonly SQLiteThreatLog[];
+  readonly loadingThreatLog: boolean;
+  readonly fetchThreatLog: () => void;
+  readonly setZoomImageUrl: (url: string | null) => void;
 }
 
 type GroupedItem =
   | { type: "threat"; log: SQLiteThreatLog }
   | { type: "nominal"; log: SQLiteThreatLog }
-  | { type: "nominal_group"; key: string; logs: SQLiteThreatLog[] }
+  | { type: "nominal_group"; key: string; logs: SQLiteThreatLog[] };
 
 export function ThreatsDrawer({
   showThreatLogPanel,
@@ -36,67 +41,67 @@ export function ThreatsDrawer({
   threatLogList,
   loadingThreatLog,
   fetchThreatLog,
-  setZoomImageUrl
+  setZoomImageUrl,
 }: ThreatsDrawerProps) {
-  const [expandedGroupKeys, setExpandedGroupKeys] = useState<string[]>([])
+  const [expandedGroupKeys, setExpandedGroupKeys] = useState<string[]>([]);
 
   // Group consecutive nominal logs
   const groupedLogs = useMemo(() => {
-    const result: GroupedItem[] = []
-    let currentNominalGroup: SQLiteThreatLog[] = []
+    const result: GroupedItem[] = [];
+    let currentNominalGroup: SQLiteThreatLog[] = [];
 
     for (const item of threatLogList) {
       if (item.is_harm === 0) {
-        currentNominalGroup.push(item)
+        currentNominalGroup.push(item);
       } else {
         // Flush active nominal group before adding threat
         if (currentNominalGroup.length > 0) {
           if (currentNominalGroup.length === 1) {
-            result.push({ type: "nominal", log: currentNominalGroup[0] })
+            result.push({ type: "nominal", log: currentNominalGroup[0] });
           } else {
-            const first = currentNominalGroup[0]
-            const last = currentNominalGroup[currentNominalGroup.length - 1]
+            const first = currentNominalGroup[0];
+            const last = currentNominalGroup[currentNominalGroup.length - 1];
             result.push({
               type: "nominal_group",
               key: `group-${first.id}-${last.id}`,
-              logs: [...currentNominalGroup]
-            })
+              logs: [...currentNominalGroup],
+            });
           }
-          currentNominalGroup = []
+          currentNominalGroup = [];
         }
-        result.push({ type: "threat", log: item })
+        result.push({ type: "threat", log: item });
       }
     }
 
     // Flush final nominal group
     if (currentNominalGroup.length > 0) {
       if (currentNominalGroup.length === 1) {
-        result.push({ type: "nominal", log: currentNominalGroup[0] })
+        result.push({ type: "nominal", log: currentNominalGroup[0] });
       } else {
-        const first = currentNominalGroup[0]
-        const last = currentNominalGroup[currentNominalGroup.length - 1]
+        const first = currentNominalGroup[0];
+        const last = currentNominalGroup[currentNominalGroup.length - 1];
         result.push({
           type: "nominal_group",
           key: `group-${first.id}-${last.id}`,
-          logs: [...currentNominalGroup]
-        })
+          logs: [...currentNominalGroup],
+        });
       }
     }
 
-    return result
-  }, [threatLogList])
+    return result;
+  }, [threatLogList]);
 
   const toggleGroup = (key: string) => {
     setExpandedGroupKeys((prev) =>
-      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
-    )
-  }
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
+    );
+  };
 
   const formatTime = (isoString: string) => {
-    return new Date(isoString).toLocaleTimeString("en-GB", { hour12: false })
-  }
+    return new Date(isoString).toLocaleTimeString("en-GB", { hour12: false });
+  };
 
-  if (!showThreatLogPanel) return null
+  if (!showThreatLogPanel) return null;
 
   return (
     <div className="absolute inset-0 bg-background/55 backdrop-blur-xs z-40 flex justify-end animate-in fade-in duration-200">
@@ -156,8 +161,8 @@ export function ThreatsDrawer({
           ) : (
             groupedLogs.map((item) => {
               if (item.type === "threat" || item.type === "nominal") {
-                const log = item.log
-                const isThreat = item.type === "threat"
+                const log = item.log;
+                const isThreat = item.type === "threat";
                 return (
                   <div
                     key={log.id}
@@ -208,14 +213,14 @@ export function ThreatsDrawer({
                       </div>
                     )}
                   </div>
-                )
+                );
               }
 
               // Renders wrapped consecutive nominal log group
-              const group = item
-              const isExpanded = expandedGroupKeys.includes(group.key)
-              const firstLog = group.logs[0]
-              const lastLog = group.logs[group.logs.length - 1]
+              const group = item;
+              const isExpanded = expandedGroupKeys.includes(group.key);
+              const firstLog = group.logs[0];
+              const lastLog = group.logs[group.logs.length - 1];
 
               return (
                 <div
@@ -235,7 +240,8 @@ export function ThreatsDrawer({
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-[9px] text-muted-foreground font-medium">
-                        {formatTime(lastLog.timestamp)} - {formatTime(firstLog.timestamp)}
+                        {formatTime(lastLog.timestamp)} -{" "}
+                        {formatTime(firstLog.timestamp)}
                       </span>
                       <ChevronRight
                         className={`w-3.5 h-3.5 text-muted-foreground transition-transform duration-200 ${
@@ -269,11 +275,11 @@ export function ThreatsDrawer({
                     </div>
                   )}
                 </div>
-              )
+              );
             })
           )}
         </div>
       </div>
     </div>
-  )
+  );
 }
