@@ -35,9 +35,17 @@ db.exec(`
     is_harm INTEGER NOT NULL,
     severity TEXT NOT NULL,
     reason TEXT NOT NULL,
-    raw_json TEXT
+    raw_json TEXT,
+    snapshot_path TEXT
   );
 `);
+
+// Handle migration for existing databases missing the snapshot_path column
+try {
+  db.exec("ALTER TABLE threats ADD COLUMN snapshot_path TEXT");
+} catch (_e) {
+  // Column already exists, safe to ignore
+}
 
 // Prepared statements for fast inserts
 const insertDetectionStmt = db.prepare(`
@@ -46,8 +54,8 @@ const insertDetectionStmt = db.prepare(`
 `);
 
 const insertThreatStmt = db.prepare(`
-  INSERT INTO threats (timestamp, camera_id, is_harm, severity, reason, raw_json)
-  VALUES (?, ?, ?, ?, ?, ?)
+  INSERT INTO threats (timestamp, camera_id, is_harm, severity, reason, raw_json, snapshot_path)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
 `);
 
 export function logDetections(
@@ -89,6 +97,7 @@ export function logThreat(
     severity: string;
     reason: string;
     rawJson: string;
+    snapshotPath?: string;
   },
 ) {
   const timestamp = new Date().toISOString();
@@ -99,5 +108,6 @@ export function logThreat(
     threat.severity,
     threat.reason,
     threat.rawJson,
+    threat.snapshotPath || null,
   );
 }

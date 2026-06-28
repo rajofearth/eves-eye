@@ -358,16 +358,28 @@ export function CameraSurface({
   );
 
   return (
-    <button
+    // biome-ignore lint/a11y/useSemanticElements: Must be a div to prevent nested button validation errors in overlays
+    <div
       className={cn(
         "relative flex h-full w-full flex-col overflow-hidden rounded-md border border-border bg-card text-left transition-all duration-300",
-        !isPrimary && "cursor-pointer hover:border-primary/50 hover:shadow-xs",
+        !isPrimary &&
+          camera &&
+          "cursor-pointer hover:border-primary/50 hover:shadow-xs",
         isSelected &&
           "border-primary shadow-[0_0_8px_rgba(139,92,246,0.15)] ring-1 ring-primary/20",
       )}
-      onClick={handleClick}
-      type="button"
-      disabled={isPrimary || !camera}
+      onClick={!isPrimary && camera ? handleClick : undefined}
+      onKeyDown={
+        !isPrimary && camera
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                handleClick();
+              }
+            }
+          : undefined
+      }
+      role="button"
+      tabIndex={0}
     >
       {chromeHeader}
 
@@ -410,6 +422,6 @@ export function CameraSurface({
           </div>
         )}
       </div>
-    </button>
+    </div>
   );
 }

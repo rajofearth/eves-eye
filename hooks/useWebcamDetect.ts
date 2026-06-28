@@ -26,6 +26,7 @@ export interface ThreatAlert {
   readonly isHarm: boolean;
   readonly severity: "critical" | "warning" | "nominal";
   readonly reason: string;
+  readonly snapshotPath?: string;
 }
 
 export interface UseWebcamDetectOptions {

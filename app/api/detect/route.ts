@@ -1,3 +1,5 @@
+import { promises as fs } from "node:fs";
+import { join } from "node:path";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import sharp from "sharp";
@@ -191,7 +193,28 @@ Do not write any markdown code block wraps. Return ONLY the raw JSON string.`;
       }
     }
 
-    // 8. Log everything to SQLite database locally
+    // 8. Handle threat snapshot local image save on active threat
+    let snapshotPath: string | undefined;
+    if (threatObj.isHarm) {
+      try {
+        const threatsDir = join(process.cwd(), "public", "threats");
+        await fs.mkdir(threatsDir, { recursive: true });
+
+        const filename = `${requestId}.jpg`;
+        const filepath = join(threatsDir, filename);
+        await fs.writeFile(filepath, buffer);
+
+        snapshotPath = `/threats/${filename}`;
+        console.log(`[DETECT] Threat snapshot frame saved: ${snapshotPath}`);
+      } catch (saveError) {
+        console.error(
+          "[DETECT] Failed to write threat snapshot frame file:",
+          saveError,
+        );
+      }
+    }
+
+    // 9. Log everything to SQLite database locally
     try {
       if (detections.length > 0) {
         logDetections(cameraId, detections);
@@ -201,10 +224,10 @@ Do not write any markdown code block wraps. Return ONLY the raw JSON string.`;
         severity: threatObj.severity || "nominal",
         reason: threatObj.reason || "No threat identified.",
         rawJson: content,
+        snapshotPath,
       });
     } catch (dbError) {
       console.error("[DETECT] Failed to write logs to SQLite:", dbError);
-      // We don't fail the request if logging fails, but print the traceback
     }
 
     const latencyMs = performance.now() - startTime;
@@ -218,6 +241,7 @@ Do not write any markdown code block wraps. Return ONLY the raw JSON string.`;
         isHarm: !!threatObj.isHarm,
         severity: threatObj.severity || "nominal",
         reason: threatObj.reason || "No threat identified.",
+        snapshotPath,
       },
       meta: { latencyMs },
     });
