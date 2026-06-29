@@ -4,7 +4,7 @@ Eve's Eye is a real-time, AI-powered security monitoring and threat detection sy
 
 ## Demo
 
-<video src="public/demo.mp4" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/60b4b2b5-82c4-4d5f-9245-a7620b038416" controls width="100%"></video>
 
 ## Key Features
 
