@@ -835,9 +835,17 @@ export default function AnalysisPage() {
                 </button>
 
                 <div className="flex-1 min-w-0 flex items-center">
-                  <div className="relative w-full h-7 flex items-center">
-                    {/* Threat/warning segments track */}
-                    <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 rounded-full bg-border/80 overflow-hidden">
+                  <div className="relative w-full h-7 flex items-center group/seek">
+                    {/* Track Background & Progress Overlay */}
+                    <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 h-1 group-hover/seek:h-1.5 transition-all rounded-full bg-zinc-800/80 overflow-hidden">
+                      {/* Played Progress fill */}
+                      <div
+                        className="absolute left-0 top-0 h-full bg-primary/20 border-r border-primary transition-all"
+                        style={{
+                          width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%`,
+                        }}
+                      />
+                      {/* Threat/warning segments track */}
                       {threats.map((t) => {
                         const maxTime = duration || 100;
                         const left = (t.startSec / maxTime) * 100;
@@ -868,11 +876,11 @@ export default function AnalysisPage() {
                       step="0.1"
                       value={currentTime}
                       onChange={(e) => handleSeek(Number(e.target.value))}
-                      className="relative z-10 w-full h-1.5 appearance-none cursor-pointer bg-transparent focus:outline-none
-                        [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-transparent
-                        [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-background [&::-webkit-slider-thumb]:shadow-sm
-                        [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent
-                        [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-background"
+                      className="relative z-10 w-full h-7 appearance-none cursor-pointer bg-transparent focus:outline-none
+                        [&::-webkit-slider-runnable-track]:bg-transparent
+                        [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:shadow-md [&::-webkit-slider-thumb]:transition-all [&::-webkit-slider-thumb]:scale-0 group-hover/seek:[&::-webkit-slider-thumb]:scale-100
+                        [&::-moz-range-track]:bg-transparent
+                        [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-white [&::-moz-range-thumb]:shadow-md [&::-moz-range-thumb]:transition-all [&::-moz-range-thumb]:scale-0 group-hover/seek:[&::-moz-range-thumb]:scale-100"
                     />
                   </div>
                 </div>
@@ -905,11 +913,14 @@ export default function AnalysisPage() {
                       setVolume(next);
                       if (next > 0) setIsMuted(false);
                     }}
-                    className="w-[72px] h-1.5 appearance-none cursor-pointer rounded-full bg-border focus:outline-none
-                      [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-border
-                      [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-zinc-300
-                      [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-border
-                      [&::-moz-range-thumb]:h-2.5 [&::-moz-range-thumb]:w-2.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-zinc-300"
+                    style={{
+                      background: `linear-gradient(to right, hsl(var(--primary)) ${(isMuted ? 0 : volume) * 100}%, hsl(var(--muted-foreground)/0.2) ${(isMuted ? 0 : volume) * 100}%)`,
+                    }}
+                    className="w-[72px] h-1 rounded-full appearance-none cursor-pointer focus:outline-none transition-all hover:h-1.5
+                      [&::-webkit-slider-runnable-track]:bg-transparent
+                      [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-sm
+                      [&::-moz-range-track]:bg-transparent
+                      [&::-moz-range-thumb]:h-2.5 [&::-moz-range-thumb]:w-2.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-sm"
                     title="Volume"
                   />
                 </div>

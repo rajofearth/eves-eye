@@ -344,10 +344,33 @@ export async function runPeopleIdentification(
 ): Promise<number> {
   db.prepare("DELETE FROM video_faces WHERE job_id = ?").run(jobId);
 
+  // Query database for frames where a human was actually detected
+  const personFrames = db
+    .prepare(`
+      SELECT DISTINCT frame_index FROM video_detections 
+      WHERE job_id = ? 
+        AND (label LIKE '%PERSON%' 
+             OR label LIKE '%MAN%' 
+             OR label LIKE '%WOMAN%' 
+             OR label LIKE '%BOY%' 
+             OR label LIKE '%GIRL%' 
+             OR label LIKE '%SUBJECT%')
+    `)
+    .all(jobId) as { frame_index: number }[];
+
+  const personFrameIndices = new Set(personFrames.map((f) => f.frame_index));
+
+  // Filter allFrames to only include those containing humans
+  const framesToScan = allFrames.filter((f) => personFrameIndices.has(f.frameIndex));
+
+  if (framesToScan.length === 0) {
+    return 0;
+  }
+
   const batchFaceSlots: BatchFace[][] = [];
 
   await runBatchedConcurrent(
-    allFrames,
+    framesToScan,
     PIPELINE.PEOPLE_BATCH_SIZE,
     PIPELINE.PEOPLE_BATCH_CONCURRENCY,
     async (batch, batchIndex) => {
