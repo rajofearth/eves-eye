@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { db } from "@/lib/db";
 import { gemmaVisionJson } from "./cerebras-client";
 
@@ -10,6 +11,14 @@ export interface FrameEntry {
 
 export interface FrameScanResult {
   detections: { label: string; box_2d: [number, number, number, number] }[];
+}
+
+export interface BatchedFrameScanResult {
+  detections: {
+    frame_index: number;
+    label: string;
+    box_2d: [number, number, number, number];
+  }[];
 }
 
 export async function scanFrame(
@@ -34,6 +43,58 @@ Return ONLY raw JSON.`;
   const parsed = await gemmaVisionJson<{ detections?: FrameScanResult["detections"] }>(
     prompt,
     [{ base64: base64Image, label: `frame_${frameIndex}` }],
+  );
+
+  return { detections: parsed.detections ?? [] };
+}
+
+export async function scanFramesBatch(
+  batch: FrameEntry[],
+  framesDir: string,
+): Promise<BatchedFrameScanResult> {
+  const images: { base64: string; label: string }[] = [];
+  for (const f of batch) {
+    const framePath = join(framesDir, f.file);
+    try {
+      const buf = await readFile(framePath);
+      images.push({
+        base64: buf.toString("base64"),
+        label: `frame_${f.frameIndex}`,
+      });
+    } catch {
+      // skip if frame not found
+    }
+  }
+
+  if (images.length === 0) {
+    return { detections: [] };
+  }
+
+  const mapping = batch
+    .map(
+      (f, i) =>
+        `  image ${i + 1} = frame_index ${f.frameIndex} (${f.timestampSec}s)`,
+    )
+    .join("\n");
+
+  const prompt = `Analyze these sequential surveillance frames.
+${mapping}
+
+Identify objects, people, vehicles, or items of interest in each image.
+Output bounding boxes [ymin, xmin, ymax, xmax] on 0–1000 scale.
+You MUST specify the correct absolute frame_index for each detection.
+
+Return JSON:
+{
+  "detections": [
+    { "frame_index": 12, "label": "person", "box_2d": [ymin, xmin, ymax, xmax] }
+  ]
+}
+Return ONLY raw JSON.`;
+
+  const parsed = await gemmaVisionJson<{ detections?: BatchedFrameScanResult["detections"] }>(
+    prompt,
+    images,
   );
 
   return { detections: parsed.detections ?? [] };

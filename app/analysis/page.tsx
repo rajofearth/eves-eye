@@ -238,6 +238,10 @@ export default function AnalysisPage() {
           setThreats(data.threats || []);
           setEvents(data.events || []);
 
+          if (data.job.summary) {
+            setVlmSummary(data.job.summary);
+          }
+
           // Update progress metrics
           if (status === "extracting") {
             setPipelineProgress(30);
@@ -251,7 +255,6 @@ export default function AnalysisPage() {
             setPipelineProgress(95);
           } else if (status === "completed") {
             setPipelineProgress(100);
-            setVlmSummary(data.job.summary || "");
             triggerToast("VIDEO ANALYSIS COMPLETE");
           }
         }
@@ -423,10 +426,13 @@ export default function AnalysisPage() {
         id: "completed",
         label: "Intelligence Report Generation",
         icon: <FileText className="w-3.5 h-3.5" />,
-        status: uploadPhase === "completed" ? "complete" : "pending",
+        status:
+          uploadPhase === "completed" || threats.length > 0 || events.length > 0
+            ? "complete"
+            : "pending",
       },
     ];
-  }, [uploadPhase, pipelineProgress]);
+  }, [uploadPhase, pipelineProgress, threats, events]);
 
   // --- Active Frame Bounding Boxes ---
   const activeDetections = useMemo(() => {

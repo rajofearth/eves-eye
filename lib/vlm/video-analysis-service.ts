@@ -3,8 +3,8 @@ import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { db } from "../db";
-import { PIPELINE, runConcurrent } from "./concurrency";
-import { persistFrameDetections, scanFrame, type FrameEntry } from "./frame-scanner";
+import { PIPELINE, runBatchedConcurrent, runConcurrent } from "./concurrency";
+import { persistFrameDetections, scanFramesBatch, type FrameEntry } from "./frame-scanner";
 import { runIntelligenceReport } from "./intelligence-report";
 import { runPeopleIdentification } from "./people-in-video";
 
@@ -43,21 +43,38 @@ export class VideoAnalysisService {
           timestampSec: i + 1,
         }));
 
-      // ── Parallel pipeline: frame scan + intel report + people ID ──
-      const frameScanTask = runConcurrent(
+      // 1. Run the fast intelligence report first to immediately populate summary, threats and events
+      await runIntelligenceReport(jobId, framesDir, frameEntries);
+
+      // 2. Run the heavy frame scan and face roster/identification concurrently
+      const frameScanTask = runBatchedConcurrent(
         frameEntries,
+        5, // Batch size of 5 (Cerebras image limit)
         PIPELINE.FRAME_SCAN_CONCURRENCY,
-        async ({ file, frameIndex, timestampSec }) => {
-          const framePath = join(framesDir, file);
-          const result = await scanFrame(framePath, frameIndex);
-          persistFrameDetections(jobId, frameIndex, timestampSec, result.detections);
+        async (batch) => {
+          const result = await scanFramesBatch(batch, framesDir);
+
+          for (const f of batch) {
+            // Find detections matching this frame's index (supports absolute and 1-based relative)
+            const frameDetections = result.detections.filter((d) => {
+              if (d.frame_index === f.frameIndex) return true;
+              const relativeIndex = batch.findIndex((b) => b.frameIndex === f.frameIndex) + 1;
+              return d.frame_index === relativeIndex;
+            });
+
+            const mappedDetections = frameDetections.map((d) => ({
+              label: d.label,
+              box_2d: d.box_2d,
+            }));
+
+            persistFrameDetections(jobId, f.frameIndex, f.timestampSec, mappedDetections);
+          }
         },
       );
 
-      const intelTask = runIntelligenceReport(jobId, framesDir, frameEntries);
       const peopleTask = runPeopleIdentification(jobId, framesDir, frameEntries);
 
-      await Promise.all([frameScanTask, intelTask, peopleTask]);
+      await Promise.all([frameScanTask, peopleTask]);
 
       db.prepare("UPDATE video_jobs SET status = 'completed' WHERE id = ?").run(jobId);
     } catch (err) {
