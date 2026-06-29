@@ -347,24 +347,17 @@ export async function runPeopleIdentification(
 ): Promise<number> {
   db.prepare("DELETE FROM video_faces WHERE job_id = ?").run(jobId);
 
-  // Query database for frames where a human was actually detected
-  const personFrames = db
-    .prepare(`
-      SELECT DISTINCT frame_index FROM video_detections 
-      WHERE job_id = ? 
-        AND (label LIKE '%PERSON%' 
-             OR label LIKE '%MAN%' 
-             OR label LIKE '%WOMAN%' 
-             OR label LIKE '%BOY%' 
-             OR label LIKE '%GIRL%' 
-             OR label LIKE '%SUBJECT%')
-    `)
-    .all(jobId) as { frame_index: number }[];
-
-  const personFrameIndices = new Set(personFrames.map((f) => f.frame_index));
-
-  // Filter allFrames to only include those containing humans
-  const framesToScan = allFrames.filter((f) => personFrameIndices.has(f.frameIndex));
+  // Sample frames for face detection (max 20 frames evenly spaced)
+  const maxSamples = 20;
+  const framesToScan: FrameEntry[] = [];
+  if (allFrames.length <= maxSamples) {
+    framesToScan.push(...allFrames);
+  } else {
+    const step = allFrames.length / maxSamples;
+    for (let i = 0; i < maxSamples; i++) {
+      framesToScan.push(allFrames[Math.floor(i * step)]!);
+    }
+  }
 
   if (framesToScan.length === 0) {
     return 0;

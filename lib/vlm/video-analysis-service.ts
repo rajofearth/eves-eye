@@ -43,8 +43,9 @@ export class VideoAnalysisService {
           timestampSec: i + 1,
         }));
 
-      // 1. Run Intelligence Report and VLM Frame Scanner in parallel (overlapped latency)
+      // Run frame scan, intelligence report, and people face identification fully in parallel (overlapped latency)
       const intelTask = runIntelligenceReport(jobId, framesDir, frameEntries);
+      const peopleTask = runPeopleIdentification(jobId, framesDir, frameEntries);
 
       const frameScanTask = runBatchedConcurrent(
         frameEntries,
@@ -71,10 +72,7 @@ export class VideoAnalysisService {
         },
       );
 
-      await Promise.all([intelTask, frameScanTask]);
-
-      // 2. Run the face identification task ONLY on the frames where humans were detected
-      await runPeopleIdentification(jobId, framesDir, frameEntries);
+      await Promise.all([intelTask, frameScanTask, peopleTask]);
 
       db.prepare("UPDATE video_jobs SET status = 'completed' WHERE id = ?").run(jobId);
     } catch (err) {

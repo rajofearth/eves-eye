@@ -263,9 +263,9 @@ export default function AnalysisPage() {
       }
     };
 
-    // Poll every 1.5 seconds
+    // Poll every 350ms for near-instant real-time updates
     poll();
-    const interval = setInterval(poll, 1500);
+    const interval = setInterval(poll, 350);
     return () => clearInterval(interval);
   }, [activeJobId, uploadPhase, triggerToast]);
 
@@ -274,6 +274,13 @@ export default function AnalysisPage() {
     setSelectedVideoFile(file);
     setUploadPhase("uploading");
     setPipelineProgress(0);
+
+    // Clear old UI states immediately so previously analyzed video data doesn't persist
+    setDetections([]);
+    setFaces([]);
+    setThreats([]);
+    setEvents([]);
+    setVlmSummary("");
 
     // Generate local preview URL
     const previewUrl = URL.createObjectURL(file);
