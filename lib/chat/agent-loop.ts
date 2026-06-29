@@ -204,3 +204,64 @@ export function appendParallelToolExchanges(
     messages.push({ role: "user", content: followUp });
   }
 }
+
+/**
+ * Ensures the total number of images in the history/messages sent to Cerebras
+ * does not exceed the maximum allowed limit (default 5).
+ * Prioritizes keeping the most recent images (from the end of the history).
+ */
+export function pruneMessagesImageBudget(
+  messages: AgentMessage[],
+  maxImages = 5,
+): AgentMessage[] {
+  let imageCount = 0;
+  const result: AgentMessage[] = [];
+
+  // Traverse from newest to oldest
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]!;
+    if (typeof msg.content === "string") {
+      result.unshift(msg);
+      continue;
+    }
+
+    // It's ContentPart[]
+    const newContentParts: ContentPart[] = [];
+    const imagesInMsg = msg.content.filter((p) => p.type === "image_url");
+
+    if (imageCount + imagesInMsg.length <= maxImages) {
+      // Keep all images in this message
+      imageCount += imagesInMsg.length;
+      result.unshift(msg);
+    } else {
+      // Keep only up to the remaining budget
+      const allowed = maxImages - imageCount;
+      let kept = 0;
+
+      for (const part of msg.content) {
+        if (part.type === "image_url") {
+          if (kept < allowed) {
+            newContentParts.push(part);
+            kept++;
+            imageCount++;
+          } else {
+            // Drop image and add a text placeholder so we don't break message meaning
+            newContentParts.push({
+              type: "text",
+              text: "[Visual context frame omitted to respect model rate limits]",
+            });
+          }
+        } else {
+          newContentParts.push(part);
+        }
+      }
+
+      result.unshift({
+        ...msg,
+        content: newContentParts,
+      });
+    }
+  }
+
+  return result;
+}

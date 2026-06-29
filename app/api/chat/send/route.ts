@@ -6,6 +6,7 @@ import {
   isSubstantiveFinal,
   MAX_AGENT_ITERATIONS,
   parseToolCalls,
+  pruneMessagesImageBudget,
   stripToolCalls,
   type AgentMessage,
 } from "@/lib/chat/agent-loop";
@@ -39,9 +40,10 @@ async function callGemma(
   messages: AgentMessage[],
 ): Promise<string> {
   try {
+    const pruned = pruneMessagesImageBudget(messages, 5);
     const response = await client.chat.completions.create({
       model: "gemma-4-31b",
-      messages: messages as Parameters<
+      messages: pruned as Parameters<
         typeof client.chat.completions.create
       >[0]["messages"],
     });
