@@ -6,6 +6,7 @@ import {
   History,
   Moon,
   RefreshCw,
+  Settings,
   Shield,
   Sun,
 } from "lucide-react";
@@ -20,6 +21,7 @@ export interface MonitorHeaderProps {
   readonly darkMode: boolean;
   readonly setDarkMode: (val: boolean) => void;
   readonly setShowThreatLogPanel: (val: boolean) => void;
+  readonly setShowSettingsPanel: (val: boolean) => void;
 }
 
 export function MonitorHeader({
@@ -29,6 +31,7 @@ export function MonitorHeader({
   darkMode,
   setDarkMode,
   setShowThreatLogPanel,
+  setShowSettingsPanel,
 }: MonitorHeaderProps) {
   const pathname = usePathname();
 
@@ -107,6 +110,16 @@ export function MonitorHeader({
         >
           <History className="w-3.5 h-3.5 text-primary" />
           THREAT_LOG
+        </button>
+
+        <button
+          onClick={() => setShowSettingsPanel(true)}
+          className="flex items-center gap-1.5 rounded-sm border border-border bg-card px-2.5 py-1 text-xs font-mono font-bold uppercase tracking-wider text-muted-foreground hover:bg-muted hover:text-foreground transition-all cursor-pointer shadow-xs"
+          type="button"
+          title="Configure cameras and custom feeds"
+        >
+          <Settings className="w-3.5 h-3.5 text-primary" />
+          SETTINGS
         </button>
 
         <div className="flex items-center gap-1.5 bg-muted rounded-xs px-2.5 py-1 text-muted-foreground">

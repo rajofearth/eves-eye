@@ -14,6 +14,7 @@ import { ThreatsDrawer } from "@/components/monitor/threats-drawer";
 import { IntelTag } from "@/components/ui/intel-log";
 import { MonoLabel } from "@/components/ui/mono-label";
 import { useWebcamDetect } from "@/hooks/useWebcamDetect";
+import { SettingsDrawer } from "@/components/monitor/settings-drawer";
 
 // ---------------------------------------------------------------------------
 // Constants & Types
@@ -22,7 +23,8 @@ interface MockCamera {
   id: string;
   name: string;
   cameraId: string;
-  sourceType: "device" | "simulated";
+  sourceType: "device" | "simulated" | "video";
+  videoUrl?: string;
 }
 
 const MAX_LOG_ENTRIES = 50;
@@ -63,6 +65,21 @@ function uid(): string {
 }
 
 export default function LiveMonitorPage() {
+  // --- Dynamic Cameras State ---
+  const [cameras, setCameras] = useState<MockCamera[]>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("eves_eye_cameras");
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch {
+          // ignore
+        }
+      }
+    }
+    return INITIAL_CAMERAS;
+  });
+
   // --- Page States ---
   const [activeCameraId, setActiveCameraId] = useState<string>("cam-webcam");
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -74,33 +91,65 @@ export default function LiveMonitorPage() {
     () => new Map(),
   );
   const [darkMode, setDarkMode] = useState<boolean>(true);
-  const [lastLoggedClasses, setLastLoggedClasses] = useState<string>("");
+  const [lastLoggedClassesMap, setLastLoggedClassesMap] = useState<Record<string, string>>({});
 
   // --- Threat Management States ---
   const [lastThreatReason, setLastThreatReason] = useState<string>("");
   const [threatAcknowledged, setThreatAcknowledged] = useState<boolean>(false);
 
-  // --- Threat History Logs Panel ---
+  // --- Drawers Panels States ---
   const [showThreatLogPanel, setShowThreatLogPanel] = useState<boolean>(false);
+  const [showSettingsPanel, setShowSettingsPanel] = useState<boolean>(false);
   const [threatLogList, setThreatLogList] = useState<SQLiteThreatLog[]>([]);
   const [loadingThreatLog, setLoadingThreatLog] = useState<boolean>(false);
   const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null);
 
   const intelLogScrollRef = useRef<HTMLDivElement>(null);
-  const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
 
-  // --- Real-time Object & Threat Detection Hook ---
-  const {
-    detections,
-    lastLatency,
-    isProcessing,
-    error: detectionError,
-    frameDimensions,
-    threat,
-  } = useWebcamDetect(webcamVideoRef, !!stream, {
-    maxFps: 0.15, // Safe rate limiting for cloud APIs (approx 1 request per 6.6 seconds)
+  // --- Separate Video References for 4 Camera Slots ---
+  const cam1Ref = useRef<HTMLVideoElement | null>(null);
+  const cam2Ref = useRef<HTMLVideoElement | null>(null);
+  const cam3Ref = useRef<HTMLVideoElement | null>(null);
+  const cam4Ref = useRef<HTMLVideoElement | null>(null);
+
+  const getRefForCameraId = (id: string) => {
+    if (cameras[0]?.id === id) return cam1Ref;
+    if (cameras[1]?.id === id) return cam2Ref;
+    if (cameras[2]?.id === id) return cam3Ref;
+    if (cameras[3]?.id === id) return cam4Ref;
+    return undefined;
+  };
+
+  // --- Camera 1 Real-time Object & Threat Detection Hook ---
+  const active1 = cameras[0]?.sourceType === "device" ? !!stream : (cameras[0]?.sourceType === "video" && !!cameras[0]?.videoUrl);
+  const det1 = useWebcamDetect(cam1Ref, active1, {
+    maxFps: 0.15,
     minConfidence: 0.45,
-    cameraId: "CAM-01-WEBCAM",
+    cameraId: cameras[0]?.cameraId || "CAM-01-WEBCAM",
+  });
+
+  // --- Camera 2 Real-time Object & Threat Detection Hook ---
+  const active2 = cameras[1]?.sourceType === "device" ? !!stream : (cameras[1]?.sourceType === "video" && !!cameras[1]?.videoUrl);
+  const det2 = useWebcamDetect(cam2Ref, active2, {
+    maxFps: 0.15,
+    minConfidence: 0.45,
+    cameraId: cameras[1]?.cameraId || "CAM-02-NORTH",
+  });
+
+  // --- Camera 3 Real-time Object & Threat Detection Hook ---
+  const active3 = cameras[2]?.sourceType === "device" ? !!stream : (cameras[2]?.sourceType === "video" && !!cameras[2]?.videoUrl);
+  const det3 = useWebcamDetect(cam3Ref, active3, {
+    maxFps: 0.15,
+    minConfidence: 0.45,
+    cameraId: cameras[2]?.cameraId || "CAM-03-GATE",
+  });
+
+  // --- Camera 4 Real-time Object & Threat Detection Hook ---
+  const active4 = cameras[3]?.sourceType === "device" ? !!stream : (cameras[3]?.sourceType === "video" && !!cameras[3]?.videoUrl);
+  const det4 = useWebcamDetect(cam4Ref, active4, {
+    maxFps: 0.15,
+    minConfidence: 0.45,
+    cameraId: cameras[3]?.cameraId || "CAM-04-SERVER",
   });
 
   // --- Initialize Time & Clock ---
@@ -244,91 +293,148 @@ export default function LiveMonitorPage() {
     }
   }, [logEntries]);
 
-  // --- Threat Interceptor ---
+  // --- Multi-Camera Threat Interceptor & Auto-Promotion ---
   useEffect(() => {
-    if (threat?.isHarm && threat.reason !== lastThreatReason) {
-      setLastThreatReason(threat.reason);
-      setThreatAcknowledged(false); // Fire a new alert card!
+    const detectorsList = [
+      { cam: cameras[0], det: det1 },
+      { cam: cameras[1], det: det2 },
+      { cam: cameras[2], det: det3 },
+      { cam: cameras[3], det: det4 },
+    ];
 
-      // Log security event in red in the scrolling terminal log
-      setLogEntries((prev) => [
-        ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
-        {
-          id: uid(),
-          timestamp: nowTimestamp(),
-          source: "CRIT",
-          message: (
-            <span className="font-bold text-red-500 animate-pulse tracking-wide">
-              !!! THREAT DETECTED: {threat.reason.toUpperCase()}
-            </span>
-          ),
-        },
-      ]);
-    }
-  }, [threat, lastThreatReason]);
+    for (const item of detectorsList) {
+      if (!item.cam) continue;
+      const t = item.det.threat;
+      if (t?.isHarm && t.reason !== lastThreatReason) {
+        setLastThreatReason(t.reason);
+        setThreatAcknowledged(false); // Fire a new alert card!
 
-  // --- Core Log and Total statistics correlation from real detections ---
-  useEffect(() => {
-    if (!stream || detections.length === 0) return;
-
-    // Group classes to prevent duplicate print triggers on consecutive identical frames
-    const classesSet = new Set(detections.map((d) => d.label || "OBJECT"));
-    const classesStr = Array.from(classesSet).sort().join(",");
-
-    if (classesStr !== lastLoggedClasses) {
-      setLastLoggedClasses(classesStr);
-
-      const time = nowTimestamp();
-
-      setLogEntries((prev) => [
-        ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
-        {
-          id: uid(),
-          timestamp: time,
-          source: "VLM",
-          message: (
-            <>
-              · Objects identified on WEBCAM:{" "}
-              {detections.map((d, index) => (
-                <span
-                  key={`log-item-${index}-${d.class}-${d.confidence}-${d.label || ""}`}
-                >
-                  {index > 0 && ", "}
-                  <IntelTag>{d.label || "OBJECT"}</IntelTag> (
-                  {Math.round(d.confidence * 100)}%)
-                </span>
-              ))}
-            </>
-          ),
-        },
-      ]);
-
-      // Update counters in panel
-      setSessionTotals((prev) => {
-        const next = new Map(prev);
-        for (const d of detections) {
-          const label = d.label || "OBJECT";
-          next.set(label, (next.get(label) ?? 0) + 1);
+        // Automatically promote camera if threat found on inactive channel
+        if (activeCameraId !== item.cam.id) {
+          setActiveCameraId(item.cam.id);
+          setLogEntries((prev) => [
+            ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
+            {
+              id: uid(),
+              timestamp: nowTimestamp(),
+              source: "SYS",
+              message: `· Stream Manager: Auto-promoted ${item.cam.cameraId} (${item.cam.name.toUpperCase()}) to primary feed due to high-severity threat.`,
+            },
+          ]);
         }
-        return next;
-      });
+
+        // Log security event in red in the scrolling terminal log
+        setLogEntries((prev) => [
+          ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
+          {
+            id: uid(),
+            timestamp: nowTimestamp(),
+            source: "CRIT",
+            message: (
+              <span className="font-bold text-red-500 animate-pulse tracking-wide">
+                !!! THREAT DETECTED ON {item.cam.cameraId}: {t.reason.toUpperCase()}
+              </span>
+            ),
+          },
+        ]);
+      }
     }
-  }, [detections, lastLoggedClasses, stream]);
+  }, [
+    det1.threat,
+    det2.threat,
+    det3.threat,
+    det4.threat,
+    cameras,
+    lastThreatReason,
+    activeCameraId,
+  ]);
+
+  // --- Dynamic Core Log and Totals statistics correlation from all 4 detectors ---
+  useEffect(() => {
+    const detectorsList = [
+      { cam: cameras[0], det: det1 },
+      { cam: cameras[1], det: det2 },
+      { cam: cameras[2], det: det3 },
+      { cam: cameras[3], det: det4 },
+    ];
+
+    for (const item of detectorsList) {
+      if (!item.cam || item.det.detections.length === 0) continue;
+
+      const classesSet = new Set(item.det.detections.map((d) => d.label || "OBJECT"));
+      const classesStr = Array.from(classesSet).sort().join(",");
+      const prevStr = lastLoggedClassesMap[item.cam.id] || "";
+
+      if (classesStr !== prevStr) {
+        setLastLoggedClassesMap((prev) => ({ ...prev, [item.cam.id]: classesStr }));
+
+        const time = nowTimestamp();
+
+        setLogEntries((prev) => [
+          ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
+          {
+            id: uid(),
+            timestamp: time,
+            source: "VLM",
+            message: (
+              <>
+                · Objects identified on {item.cam.cameraId} ({item.cam.name.toUpperCase()}):{" "}
+                {item.det.detections.map((d, index) => (
+                  <span
+                    key={`log-item-${item.cam.id}-${index}-${d.class}-${d.confidence}`}
+                  >
+                    {index > 0 && ", "}
+                    <IntelTag>{d.label || "OBJECT"}</IntelTag> (
+                    {Math.round(d.confidence * 100)}%)
+                  </span>
+                ))}
+              </>
+            ),
+          },
+        ]);
+
+        // Update counters in panel
+        setSessionTotals((prev) => {
+          const next = new Map(prev);
+          for (const d of item.det.detections) {
+            const label = d.label || "OBJECT";
+            next.set(label, (next.get(label) ?? 0) + 1);
+          }
+          return next;
+        });
+      }
+    }
+  }, [
+    det1.detections,
+    det2.detections,
+    det3.detections,
+    det4.detections,
+    cameras,
+    lastLoggedClassesMap,
+  ]);
 
   // --- Log error warnings if detection fails ---
   useEffect(() => {
-    if (detectionError) {
-      setLogEntries((prev) => [
-        ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
-        {
-          id: uid(),
-          timestamp: nowTimestamp(),
-          source: "SYS",
-          message: `· WARNING: ${detectionError}`,
-        },
-      ]);
+    const detectorsList = [
+      { cam: cameras[0], det: det1 },
+      { cam: cameras[1], det: det2 },
+      { cam: cameras[2], det: det3 },
+      { cam: cameras[3], det: det4 },
+    ];
+    for (const item of detectorsList) {
+      if (item.cam && item.det.error) {
+        setLogEntries((prev) => [
+          ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
+          {
+            id: uid(),
+            timestamp: nowTimestamp(),
+            source: "SYS",
+            message: `· WARNING (${item.cam.cameraId}): ${item.det.error}`,
+          },
+        ]);
+      }
     }
-  }, [detectionError]);
+  }, [det1.error, det2.error, det3.error, det4.error, cameras]);
 
   // --- Simulated Diagnostic Tickers ---
   useEffect(() => {
@@ -393,7 +499,7 @@ export default function LiveMonitorPage() {
   // --- Handlers ---
   const handlePromoteCamera = (id: string) => {
     setActiveCameraId(id);
-    const targetCam = INITIAL_CAMERAS.find((c) => c.id === id);
+    const targetCam = cameras.find((c) => c.id === id);
     if (targetCam) {
       setLogEntries((prev) => [
         ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
@@ -401,33 +507,58 @@ export default function LiveMonitorPage() {
           id: uid(),
           timestamp: nowTimestamp(),
           source: "SYS",
-          message: `· Stream Manager: Promoted camera ${targetCam.cameraId} to primary feed.`,
+          message: `· Stream Manager: Promoted camera ${targetCam.cameraId} (${targetCam.name.toUpperCase()}) to primary feed.`,
         },
       ]);
     }
   };
 
+  const handleSaveCameras = (updated: MockCamera[]) => {
+    setCameras(updated);
+    localStorage.setItem("eves_eye_cameras", JSON.stringify(updated));
+    setLogEntries((prev) => [
+      ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
+      {
+        id: uid(),
+        timestamp: nowTimestamp(),
+        source: "SYS",
+        message: "· Settings: Reconfigured dynamic camera feeds.",
+      },
+    ]);
+  };
+
   // --- Derived Values ---
   const activeCamera =
-    INITIAL_CAMERAS.find((c) => c.id === activeCameraId) ?? INITIAL_CAMERAS[0];
-  const gridCameras = INITIAL_CAMERAS.filter((c) => c.id !== activeCameraId);
+    cameras.find((c) => c.id === activeCameraId) ?? cameras[0] ?? INITIAL_CAMERAS[0];
+  const gridCameras = cameras.filter((c) => c.id !== activeCameraId);
+
+  const getDetectorForCameraId = (id: string) => {
+    if (cameras[0]?.id === id) return det1;
+    if (cameras[1]?.id === id) return det2;
+    if (cameras[2]?.id === id) return det3;
+    if (cameras[3]?.id === id) return det4;
+    return { detections: [], lastLatency: null, isProcessing: false, error: null, frameDimensions: null, threat: null };
+  };
+
+  const activeDetector = getDetectorForCameraId(activeCamera.id);
 
   const sortedSessionTotals = useMemo(() => {
     return [...sessionTotals.entries()].sort((a, b) => b[1] - a[1]);
   }, [sessionTotals]);
 
-  const isPrimaryPulsing = !!(threat?.isHarm && !threatAcknowledged);
+  const isPrimaryPulsing = !!(activeDetector.threat?.isHarm && !threatAcknowledged);
 
   return (
     <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-background font-sans text-foreground transition-colors duration-300">
       {/* ── HEADER PANEL ── */}
       <MonitorHeader
         isPrimaryPulsing={isPrimaryPulsing}
-        isProcessing={isProcessing}
+        isProcessing={det1.isProcessing || det2.isProcessing || det3.isProcessing || det4.isProcessing}
         utcTime={utcTime}
         darkMode={darkMode}
         setDarkMode={setDarkMode}
         setShowThreatLogPanel={setShowThreatLogPanel}
+        setShowSettingsPanel={setShowSettingsPanel}
       />
 
       {/* ── MAIN CONTENT AREA ── */}
@@ -447,17 +578,14 @@ export default function LiveMonitorPage() {
               isPrimary
               stream={activeCamera.sourceType === "device" ? stream : null}
               error={activeCamera.sourceType === "device" ? streamError : null}
-              videoRef={
-                activeCamera.id === "cam-webcam" ? webcamVideoRef : undefined
-              }
+              videoRef={getRefForCameraId(activeCamera.id)}
               overlays={
                 <>
                   {/* Real Bounding Box Highlights */}
-                  {activeCamera.id === "cam-webcam" &&
-                    frameDimensions &&
-                    detections.map((det, index) => {
-                      const fw = frameDimensions.width || 640;
-                      const fh = frameDimensions.height || 480;
+                  {activeDetector.frameDimensions &&
+                    activeDetector.detections.map((det, index) => {
+                      const fw = activeDetector.frameDimensions.width || 640;
+                      const fh = activeDetector.frameDimensions.height || 480;
 
                       const left = (det.x1 / fw) * 100;
                       const top = (det.y1 / fh) * 100;
@@ -491,10 +619,10 @@ export default function LiveMonitorPage() {
                       <MonoLabel size="2xs">THREAT_ANALYZER</MonoLabel>
                       <MonoLabel
                         size="xs"
-                        variant={isProcessing ? "warning" : "nominal"}
+                        variant={activeDetector.isProcessing ? "warning" : "nominal"}
                         className="font-semibold"
                       >
-                        {isProcessing ? "ANALYZING..." : "GEMMA 4 31B"}
+                        {activeDetector.isProcessing ? "ANALYZING..." : "GEMMA 4 31B"}
                       </MonoLabel>
                     </div>
                   </div>
@@ -506,15 +634,15 @@ export default function LiveMonitorPage() {
                       variant="silver"
                       className="font-semibold"
                     >
-                      {lastLatency !== null
-                        ? `${lastLatency.toFixed(0)}ms`
+                      {activeDetector.lastLatency !== null
+                        ? `${activeDetector.lastLatency.toFixed(0)}ms`
                         : "N/A"}
                     </MonoLabel>
                   </div>
 
                   {/* FLOATING THREAT ALERT */}
                   <ThreatAlertCard
-                    threat={threat}
+                    threat={activeDetector.threat}
                     threatAcknowledged={threatAcknowledged}
                     setThreatAcknowledged={setThreatAcknowledged}
                     setZoomImageUrl={setZoomImageUrl}
@@ -533,9 +661,7 @@ export default function LiveMonitorPage() {
                 stream={camera.sourceType === "device" ? stream : null}
                 error={camera.sourceType === "device" ? streamError : null}
                 onSelect={handlePromoteCamera}
-                videoRef={
-                  camera.id === "cam-webcam" ? webcamVideoRef : undefined
-                }
+                videoRef={getRefForCameraId(camera.id)}
               />
             ))}
           </div>
@@ -592,6 +718,13 @@ export default function LiveMonitorPage() {
             </div>
           </div>
         )}
+        {/* ── SETTINGS CONFIGURATION SIDEBAR DRAWER ── */}
+        <SettingsDrawer
+          show={showSettingsPanel}
+          onClose={() => setShowSettingsPanel(false)}
+          cameras={cameras}
+          onSaveCameras={handleSaveCameras}
+        />
       </main>
     </div>
   );

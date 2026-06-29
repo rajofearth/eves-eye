@@ -259,6 +259,41 @@ export function WebcamSurface({
 }
 
 // ---------------------------------------------------------------------------
+// Video Feed Surface (Local looped file playback)
+// ---------------------------------------------------------------------------
+export function VideoSurface({
+  videoUrl,
+  isPrimary = false,
+  videoRef,
+}: {
+  videoUrl: string;
+  isPrimary?: boolean;
+  videoRef?: React.RefObject<HTMLVideoElement | null>;
+}) {
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const activeVideoRef = videoRef ?? localVideoRef;
+
+  return (
+    <div className="relative w-full h-full bg-black select-none">
+      <video
+        ref={activeVideoRef}
+        src={videoUrl}
+        autoPlay
+        loop
+        muted
+        playsInline
+        className={cn(
+          "w-full h-full object-cover transition-all duration-700",
+          isPrimary
+            ? "grayscale-[10%] brightness-95"
+            : "grayscale-[40%] brightness-75 contrast-125",
+        )}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Camera Surface Component
 // ---------------------------------------------------------------------------
 export interface CameraSurfaceProps {
@@ -266,7 +301,8 @@ export interface CameraSurfaceProps {
     id: string;
     name: string;
     cameraId: string;
-    sourceType: "device" | "simulated";
+    sourceType: "device" | "simulated" | "video";
+    videoUrl?: string;
   } | null;
   readonly isPrimary?: boolean;
   readonly isSelected?: boolean;
@@ -389,6 +425,12 @@ export function CameraSurface({
             <WebcamSurface
               stream={stream}
               error={error}
+              isPrimary={isPrimary}
+              videoRef={videoRef}
+            />
+          ) : camera.sourceType === "video" && camera.videoUrl ? (
+            <VideoSurface
+              videoUrl={camera.videoUrl}
               isPrimary={isPrimary}
               videoRef={videoRef}
             />
