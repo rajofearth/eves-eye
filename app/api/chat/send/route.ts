@@ -1,11 +1,11 @@
 import { db } from "@/lib/db";
 import {
-  appendToolExchange,
+  appendParallelToolExchanges,
   buildEmptyResponseNudge,
   buildForcedSynthesisPrompt,
   isSubstantiveFinal,
   MAX_AGENT_ITERATIONS,
-  parseToolCall,
+  parseToolCalls,
   stripToolCalls,
   type AgentMessage,
 } from "@/lib/chat/agent-loop";
@@ -156,28 +156,35 @@ export async function POST(req: NextRequest) {
 
         for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration++) {
           const raw = await callGemma(client, messages);
-          const toolCall = parseToolCall(raw);
+          const toolCalls = parseToolCalls(raw);
 
-          if (toolCall) {
-            sse(controller, { type: "tool_call", call: toolCall });
+          if (toolCalls.length > 0) {
+            // Stream all tool_call events immediately so the UI shows them
+            for (const tc of toolCalls) {
+              sse(controller, { type: "tool_call", call: tc });
+            }
 
-            const toolResult = await executeTool(toolCall);
-            toolLog.push({ call: toolCall, result: toolResult.text });
-
-            sse(controller, {
-              type: "tool_result",
-              call: toolCall,
-              result: toolResult.text,
-              imageBase64: toolResult.imageBase64,
-              mimeType: toolResult.mimeType,
-            });
-
-            appendToolExchange(
-              messages,
-              raw,
-              toolResult,
-              toolCall.name,
+            // Execute ALL tools in parallel
+            const toolResults = await Promise.all(
+              toolCalls.map((tc) => executeTool(tc)),
             );
+
+            // Stream all results and accumulate log
+            for (let i = 0; i < toolCalls.length; i++) {
+              const tc = toolCalls[i]!;
+              const res = toolResults[i]!;
+              toolLog.push({ call: tc, result: res.text });
+              sse(controller, {
+                type: "tool_result",
+                call: tc,
+                result: res.text,
+                imageBase64: res.imageBase64,
+                mimeType: res.mimeType,
+              });
+            }
+
+            // Inject assistant turn + combined results user turn
+            appendParallelToolExchanges(messages, raw, toolCalls, toolResults);
             continue;
           }
 

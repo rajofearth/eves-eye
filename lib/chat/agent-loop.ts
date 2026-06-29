@@ -2,8 +2,12 @@ import type { ToolCall, ToolResult } from "./types";
 
 export const MAX_AGENT_ITERATIONS = 15;
 
+// Single tool_call block (kept for backward compat)
 const TOOL_CALL_RE = /<tool_call>([\s\S]*?)<\/tool_call>/i;
+// Global version for parsing multiple calls
+const TOOL_CALL_RE_G = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
 
+/** Parse the FIRST tool_call block (legacy helper) */
 export function parseToolCall(text: string): ToolCall | null {
   const match = text.match(TOOL_CALL_RE);
   if (!match) return null;
@@ -31,6 +35,27 @@ export function parseToolCall(text: string): ToolCall | null {
     }
   }
   return null;
+}
+
+/** Parse ALL tool_call blocks from a response (parallel execution). */
+export function parseToolCalls(text: string): ToolCall[] {
+  const results: ToolCall[] = [];
+  for (const match of text.matchAll(TOOL_CALL_RE_G)) {
+    const inner = match[1].trim();
+    try {
+      const parsed = JSON.parse(inner) as { name: string; args: Record<string, unknown> };
+      if (parsed.name && parsed.args) results.push(parsed);
+    } catch {
+      const jsonMatch = inner.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]) as { name: string; args: Record<string, unknown> };
+          if (parsed.name && parsed.args) results.push(parsed);
+        } catch { /* skip */ }
+      }
+    }
+  }
+  return results;
 }
 
 export function stripToolCalls(text: string): string {
@@ -84,6 +109,10 @@ export type AgentMessage = {
   content: string | ContentPart[];
 };
 
+/**
+ * Append one tool exchange (single call) to the message history.
+ * Keeps the raw assistant output and injects the result as a user turn.
+ */
 export function appendToolExchange(
   messages: AgentMessage[],
   assistantRaw: string,
@@ -117,5 +146,61 @@ export function appendToolExchange(
       role: "user",
       content: buildToolResultFollowUp(toolResult, toolName),
     });
+  }
+}
+
+/**
+ * Append MULTIPLE parallel tool exchanges to the message history.
+ * All tool calls from one assistant turn are recorded, then all results
+ * are injected together in one user turn so Gemma sees the full batch.
+ */
+export function appendParallelToolExchanges(
+  messages: AgentMessage[],
+  assistantRaw: string,
+  toolCalls: ToolCall[],
+  toolResults: ToolResult[],
+): void {
+  const safeAssistantContent =
+    assistantRaw.trim() ||
+    toolCalls
+      .map((tc) => `<tool_call>{"name":"${tc.name}","args":{}}</tool_call>`)
+      .join("\n");
+
+  messages.push({ role: "assistant", content: safeAssistantContent });
+
+  // Build a combined user turn with all results + any images
+  const textParts: string[] = [];
+  const imageParts: ContentPart[] = [];
+
+  for (let i = 0; i < toolCalls.length; i++) {
+    const tc = toolCalls[i]!;
+    const res = toolResults[i]!;
+    textParts.push(
+      `<tool_result name="${tc.name}">${res.text}</tool_result>`,
+    );
+    if (res.imageBase64) {
+      imageParts.push({
+        type: "image_url",
+        image_url: {
+          url: `data:${res.mimeType ?? "image/jpeg"};base64,${res.imageBase64}`,
+        },
+      });
+    }
+  }
+
+  const allResultsText = textParts.join("\n\n");
+  const hasSubagent = toolCalls.some((tc) => tc.name === "run_video_subagent");
+
+  const followUp = hasSubagent
+    ? `${allResultsText}\n\nAll ${toolCalls.length} parallel task(s) complete. You MUST immediately:\n1. Call more tools/subagents if investigation is incomplete — include multiple <tool_call> blocks.\n2. OR write your COMPLETE final intelligence briefing now — no tool_call tags.\n\nDo NOT output an empty response.`
+    : `${allResultsText}\n\nAll ${toolCalls.length} tool result(s) received. You MUST immediately:\n1. Call more tools if needed — include multiple <tool_call> blocks.\n2. OR write your complete final intelligence briefing now — no tool_call tags.\n\nDo NOT output an empty response.`;
+
+  if (imageParts.length > 0) {
+    messages.push({
+      role: "user",
+      content: [{ type: "text", text: followUp }, ...imageParts],
+    });
+  } else {
+    messages.push({ role: "user", content: followUp });
   }
 }

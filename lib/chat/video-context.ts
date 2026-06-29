@@ -1,6 +1,35 @@
 import { db } from "@/lib/db";
 import type { VideoContext } from "./types";
 
+/**
+ * Convert a raw filename into a short human-readable label.
+ * Examples:
+ *   "AMCREST PROHD 1080P PAN_TILT WI-FI CAMERA – SAMPLE FOOTAGE (INDOOR DAYTIME SCHOOLWORK).MP4"
+ *   → "Amcrest Prohd 1080p Pan Tilt Wi-fi Camera – Sample Footage"
+ *
+ *   "bedroom_cam_2024-06-01.mkv" → "Bedroom Cam 2024 06 01"
+ */
+function makeFriendlyName(filename: string): string {
+  return (
+    filename
+      // remove file extension
+      .replace(/\.[a-z0-9]{2,5}$/i, "")
+      // replace underscores with spaces
+      .replace(/_/g, " ")
+      // collapse multiple spaces
+      .replace(/\s{2,}/g, " ")
+      .trim()
+      // title-case each word
+      .replace(
+        /\b(\w)/g,
+        (c) => c.toUpperCase(),
+      )
+      // trim to 50 chars
+      .slice(0, 50)
+      .trimEnd()
+  );
+}
+
 export function loadVideoContext(jobId: string): VideoContext | null {
   const job = db
     .prepare("SELECT filename, status, summary FROM video_jobs WHERE id = ?")
@@ -30,6 +59,7 @@ export function loadVideoContext(jobId: string): VideoContext | null {
   return {
     jobId,
     filename: job.filename,
+    friendlyName: makeFriendlyName(job.filename),
     status: job.status,
     durationSec: duration?.dur ?? 0,
     summary: job.summary ?? "",
@@ -52,11 +82,14 @@ export function loadVideoContexts(jobIds: string[]): VideoContext[] {
 export const TOOL_SCHEMA = `
 ## AVAILABLE TOOLS
 
-Call ONE tool per turn using this exact format (no markdown):
+You may call ONE OR MORE tools in a single response by including multiple tool_call blocks.
+Tools execute in PARALLEL — use this to investigate multiple videos, time ranges, or hypotheses simultaneously.
 
+Format (repeat as many times as needed in one response):
 <tool_call>{"name":"TOOL_NAME","args":{...}}</tool_call>
+<tool_call>{"name":"ANOTHER_TOOL","args":{...}}</tool_call>
 
-Tools:
+Tools available:
 
 1. get_time_window — detections in a time range
    Args: { "jobId": string, "startSec": number, "endSec": number }
@@ -67,21 +100,21 @@ Tools:
 3. get_threats — full threat timeline
    Args: { "jobId": string }
 
-4. get_time_period_assessment — full assessment of a window
+4. get_time_period_assessment — combined detection + threat + face summary for a window
    Args: { "jobId": string, "startSec": number, "endSec": number }
 
 5. get_face_roster — unique people identified in video
    Args: { "jobId": string }
 
-6. get_frame_snapshot — inspect a specific frame
+6. get_frame_snapshot — visually inspect a specific frame
    Args: { "jobId": string, "timeSec": number }
 
-7. run_video_subagent — dispatch focused investigation subagent
-   Use liberally for complex questions. Run multiple subagents on different videos or time ranges.
+7. run_video_subagent — dispatch a focused investigation subagent with full evidence access
+   Run multiple subagents in the SAME response to investigate different videos or time ranges in parallel.
    Args: { "jobId": string, "task": string, "startSec"?: number, "endSec"?: number }
 
-After a tool_call you receive <tool_result>. You MUST then either call another tool OR write your final briefing.
-Never stop with an empty response after a tool/subagent result.
+After ALL parallel tool_calls complete you will receive all <tool_result>s. Then either call more tools or write your final briefing.
+Never stop with an empty response after receiving tool results.
 When fully done, output your complete final intelligence briefing with NO tool_call tags.
 Never use markdown code blocks.
 `;
@@ -95,8 +128,7 @@ export function buildSystemPrompt(videos: VideoContext[]): string {
       const formatThreat = (t: (typeof v.threats)[0]) =>
         `  • [${t.startSec}s–${t.endSec}s] ${t.severity.toUpperCase()}: ${t.reason}`;
 
-      return `VIDEO: "${v.filename}" (job_id: ${v.jobId})
-Source file: ${v.videoUrl}
+      return `VIDEO: "${v.friendlyName}" (internal job_id for tool calls: ${v.jobId})
 Duration: ${v.durationSec}s
 Summary: ${v.summary || "Pending"}
 
@@ -114,17 +146,21 @@ YOUR ROLE:
 - ANALYSE: Deeply examine all video evidence attached to this conversation
 - SEARCH: Use tools to inspect any time period, frame, or threat window
 - EXPLORE: Cross-reference multiple videos; follow leads wherever they go
-- DELEGATE: Dispatch run_video_subagent liberally — use multiple subagents on different videos, time ranges, or hypotheses in parallel across turns
+- DELEGATE: Dispatch run_video_subagent liberally — run MULTIPLE subagents in parallel by including multiple tool_call blocks in one response
 - PERSIST: Take as many tool/subagent turns as needed for the best possible answer. Never settle for a shallow response.
 
-You have ${videos.length} video(s). Key frames from each source video are attached visually — treat them as direct footage access alongside the full video files on disk.
+You have ${videos.length} video(s). Key frames from each source are attached visually.
 
 ${videoContexts}
 
 ${TOOL_SCHEMA}
 
-Cite videos by filename. Be thorough, precise, and intelligence-report in tone.
-After subagents or tools return, always synthesize findings into a final answer — never leave the analyst with only raw tool output.`;
+CRITICAL OUTPUT RULES:
+- NEVER expose job_ids, raw filenames, file paths, or internal system references in your answers.
+- Refer to videos ONLY by their friendly name (e.g. "the schoolwork footage", "the bedroom cam").
+- Cite timestamps (e.g. "at 13s", "between 30s and 45s") — never technical IDs.
+- Be thorough, precise, and intelligence-report in tone.
+- After subagents or tools return, ALWAYS synthesize findings into a complete final answer.`;
 }
 
 export { parseToolCall } from "./agent-loop";

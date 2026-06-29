@@ -8,6 +8,8 @@ export interface VideoThreat {
 export interface VideoContext {
   jobId: string;
   filename: string;
+  /** Human-readable short name — no extension, no job_id, title-cased */
+  friendlyName: string;
   durationSec: number;
   status: string;
   summary: string;
