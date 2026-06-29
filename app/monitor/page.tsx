@@ -15,46 +15,19 @@ import { IntelTag } from "@/components/ui/intel-log";
 import { MonoLabel } from "@/components/ui/mono-label";
 import { useWebcamDetect } from "@/hooks/useWebcamDetect";
 import { SettingsDrawer } from "@/components/monitor/settings-drawer";
+import {
+  CAMERAS_UPDATED_EVENT,
+  INITIAL_CAMERAS,
+  type MockCamera,
+  loadCameras,
+  saveCameras,
+} from "@/lib/cameras";
 
 // ---------------------------------------------------------------------------
 // Constants & Types
 // ---------------------------------------------------------------------------
-interface MockCamera {
-  id: string;
-  name: string;
-  cameraId: string;
-  sourceType: "device" | "simulated" | "video";
-  videoUrl?: string;
-}
 
 const MAX_LOG_ENTRIES = 50;
-
-const INITIAL_CAMERAS: MockCamera[] = [
-  {
-    id: "cam-webcam",
-    name: "Main Browser Cam",
-    cameraId: "CAM-01-WEBCAM",
-    sourceType: "device",
-  },
-  {
-    id: "cam-north",
-    name: "Perimeter North",
-    cameraId: "CAM-02-NORTH",
-    sourceType: "simulated",
-  },
-  {
-    id: "cam-gate",
-    name: "Docking Gate 4",
-    cameraId: "CAM-03-GATE",
-    sourceType: "simulated",
-  },
-  {
-    id: "cam-corridor",
-    name: "Server Corridor",
-    cameraId: "CAM-04-SERVER",
-    sourceType: "simulated",
-  },
-];
 
 function nowTimestamp(): string {
   return new Date().toLocaleTimeString("en-GB", { hour12: false });
@@ -66,19 +39,7 @@ function uid(): string {
 
 export default function LiveMonitorPage() {
   // --- Dynamic Cameras State ---
-  const [cameras, setCameras] = useState<MockCamera[]>(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("eves_eye_cameras");
-      if (saved) {
-        try {
-          return JSON.parse(saved);
-        } catch {
-          // ignore
-        }
-      }
-    }
-    return INITIAL_CAMERAS;
-  });
+  const [cameras, setCameras] = useState<MockCamera[]>(() => loadCameras());
 
   // --- Page States ---
   const [activeCameraId, setActiveCameraId] = useState<string>("cam-webcam");
@@ -126,6 +87,7 @@ export default function LiveMonitorPage() {
     maxFps: 0.15,
     minConfidence: 0.45,
     cameraId: cameras[0]?.cameraId || "CAM-01-WEBCAM",
+    initialDelayMs: 0,
   });
 
   // --- Camera 2 Real-time Object & Threat Detection Hook ---
@@ -134,6 +96,7 @@ export default function LiveMonitorPage() {
     maxFps: 0.15,
     minConfidence: 0.45,
     cameraId: cameras[1]?.cameraId || "CAM-02-NORTH",
+    initialDelayMs: 1600,
   });
 
   // --- Camera 3 Real-time Object & Threat Detection Hook ---
@@ -142,6 +105,7 @@ export default function LiveMonitorPage() {
     maxFps: 0.15,
     minConfidence: 0.45,
     cameraId: cameras[2]?.cameraId || "CAM-03-GATE",
+    initialDelayMs: 3200,
   });
 
   // --- Camera 4 Real-time Object & Threat Detection Hook ---
@@ -150,7 +114,19 @@ export default function LiveMonitorPage() {
     maxFps: 0.15,
     minConfidence: 0.45,
     cameraId: cameras[3]?.cameraId || "CAM-04-SERVER",
+    initialDelayMs: 4800,
   });
+
+  // --- Sync cameras when updated from settings page ---
+  useEffect(() => {
+    const handleCamerasUpdated = () => {
+      setCameras(loadCameras());
+    };
+    window.addEventListener(CAMERAS_UPDATED_EVENT, handleCamerasUpdated);
+    return () => {
+      window.removeEventListener(CAMERAS_UPDATED_EVENT, handleCamerasUpdated);
+    };
+  }, []);
 
   // --- Initialize Time & Clock ---
   useEffect(() => {
@@ -515,7 +491,7 @@ export default function LiveMonitorPage() {
 
   const handleSaveCameras = (updated: MockCamera[]) => {
     setCameras(updated);
-    localStorage.setItem("eves_eye_cameras", JSON.stringify(updated));
+    saveCameras(updated);
     setLogEntries((prev) => [
       ...prev.slice(-(MAX_LOG_ENTRIES - 1)),
       {
@@ -583,9 +559,11 @@ export default function LiveMonitorPage() {
                 <>
                   {/* Real Bounding Box Highlights */}
                   {activeDetector.frameDimensions &&
-                    activeDetector.detections.map((det, index) => {
-                      const fw = activeDetector.frameDimensions.width || 640;
-                      const fh = activeDetector.frameDimensions.height || 480;
+                    (() => {
+                      const frameDims = activeDetector.frameDimensions;
+                      return activeDetector.detections.map((det, index) => {
+                      const fw = frameDims.width || 640;
+                      const fh = frameDims.height || 480;
 
                       const left = (det.x1 / fw) * 100;
                       const top = (det.y1 / fh) * 100;
@@ -610,7 +588,8 @@ export default function LiveMonitorPage() {
                           </div>
                         </div>
                       );
-                    })}
+                    });
+                    })()}
 
                   {/* Operational Security Status corner badges */}
                   <div className="absolute bottom-3 right-3 flex items-center gap-2 border border-border bg-card/80 backdrop-blur-xs rounded-sm px-2.5 py-1 z-10 shadow-lg">

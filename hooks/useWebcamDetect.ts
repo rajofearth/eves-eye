@@ -33,6 +33,7 @@ export interface UseWebcamDetectOptions {
   readonly maxFps?: number;
   readonly minConfidence?: number;
   readonly cameraId?: string;
+  readonly initialDelayMs?: number;
 }
 
 export interface UseWebcamDetectResult {
@@ -56,6 +57,7 @@ export function useWebcamDetect(
   const maxFps = options?.maxFps ?? DEFAULT_MAX_FPS;
   const minConfidence = options?.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
   const cameraId = options?.cameraId;
+  const initialDelayMs = options?.initialDelayMs ?? 0;
   const minIntervalMs = 1000 / maxFps;
 
   const [detections, setDetections] = useState<readonly Detection[]>([]);
@@ -267,7 +269,15 @@ export function useWebcamDetect(
       return;
     }
 
-    void processFrame();
+    const startDetection = () => {
+      void processFrame();
+    };
+
+    if (initialDelayMs > 0) {
+      timeoutRef.current = setTimeout(startDetection, initialDelayMs);
+    } else {
+      startDetection();
+    }
 
     return () => {
       if (abortControllerRef.current) {
@@ -279,7 +289,7 @@ export function useWebcamDetect(
         timeoutRef.current = null;
       }
     };
-  }, [isActive, processFrame]);
+  }, [isActive, processFrame, initialDelayMs]);
 
   return {
     detections,

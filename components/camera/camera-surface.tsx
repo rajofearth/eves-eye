@@ -328,6 +328,29 @@ export function CameraSurface({
     onSelect(camera.id);
   };
 
+  const getSourceBadge = () => {
+    if (!camera) return "EMPTY";
+    if (camera.sourceType === "device") return "DEV";
+    if (camera.sourceType === "video") return "VID";
+    return "SIM";
+  };
+
+  const getPrimaryStatusLabel = () => {
+    if (!camera) return "EMPTY";
+    if (camera.sourceType === "device") {
+      return stream ? "LIVE" : "CONNECTING";
+    }
+    if (camera.sourceType === "video" && camera.videoUrl) {
+      return "LOOP";
+    }
+    return "MOCK_ACTIVE";
+  };
+
+  const isPrimaryActive =
+    camera &&
+    ((camera.sourceType === "device" && !!stream) ||
+      (camera.sourceType === "video" && !!camera.videoUrl));
+
   // Header display (for primary view)
   const chromeHeader = isPrimary ? (
     <div className="flex h-9 shrink-0 items-center justify-between border-b border-border bg-card/60 backdrop-blur-md px-3.5">
@@ -346,23 +369,15 @@ export function CameraSurface({
         {camera ? (
           <>
             <StatusDot
-              variant={
-                camera.sourceType === "device" && stream ? "nominal" : "silver"
-              }
+              variant={isPrimaryActive ? "nominal" : "silver"}
               pulse
               size="xs"
             />
             <MonoLabel
-              variant={
-                camera.sourceType === "device" && stream ? "nominal" : "silver"
-              }
+              variant={isPrimaryActive ? "nominal" : "silver"}
               size="2xs"
             >
-              {camera.sourceType === "device"
-                ? stream
-                  ? "LIVE"
-                  : "CONNECTING"
-                : "MOCK_ACTIVE"}
+              {getPrimaryStatusLabel()}
             </MonoLabel>
           </>
         ) : (
@@ -387,7 +402,7 @@ export function CameraSurface({
       </div>
       <div className="flex flex-col items-end gap-0.5">
         <span className="bg-black/70 rounded-xs px-1 text-[8px] font-mono text-muted-foreground uppercase leading-none py-0.5 font-semibold">
-          {camera ? (camera.sourceType === "device" ? "DEV" : "SIM") : "EMPTY"}
+          {getSourceBadge()}
         </span>
       </div>
     </div>

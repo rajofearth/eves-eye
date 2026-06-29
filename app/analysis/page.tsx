@@ -2,27 +2,22 @@
 
 import {
   AlertTriangle,
-  Clock,
   Download,
   Eye,
   FileText,
-  Moon,
   Pause,
   Play,
-  Shield,
   Sparkles,
-  Sun,
   Upload,
   UserCheck,
   Video,
   Volume2,
   VolumeX,
 } from "lucide-react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
 import type * as React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { AppHeader } from "@/components/app-header";
 import { MonoLabel } from "@/components/ui/mono-label";
 import { StatusDot } from "@/components/ui/status-dot";
 
@@ -71,7 +66,6 @@ interface DBVideoEvent {
 }
 
 export default function AnalysisPage() {
-  const pathname = usePathname();
   const [showToast, setShowToast] = useState<string | null>(null);
 
   const triggerToast = useCallback((msg: string) => {
@@ -493,79 +487,12 @@ export default function AnalysisPage() {
 
   return (
     <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-background font-sans text-foreground transition-colors duration-300">
-      {/* ── HEADER PANEL ── */}
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card/45 backdrop-blur-md px-4 py-1.5 z-20">
-        <div className="flex items-center gap-3">
-          <Link
-            href="/monitor"
-            className="flex items-center gap-1.5 bg-primary/10 hover:bg-primary/20 rounded-sm px-2.5 py-0.5 border border-primary/20 transition-all font-bold"
-          >
-            <Shield className="w-4 h-4 text-primary" />
-            <span className="font-heading text-xs font-semibold uppercase tracking-wider text-primary">
-              EVE&apos;S EYE
-            </span>
-          </Link>
-
-          <div className="hidden md:inline-flex items-center gap-1 bg-muted px-2 py-0.5 border border-border/80 text-[10px] font-mono text-muted-foreground uppercase rounded-xs">
-            VIDEO_INTELLIGENCE_ANALYZER
-          </div>
-
-          <nav className="flex items-center gap-4 ml-4 pl-4 border-l border-border/80">
-            <Link
-              href="/monitor"
-              className={`font-mono text-[10px] font-bold uppercase tracking-wider transition-all pb-0.5 hover:text-foreground ${
-                pathname === "/monitor"
-                  ? "text-primary border-b-2 border-primary"
-                  : "text-muted-foreground"
-              }`}
-            >
-              Live_Monitor
-            </Link>
-            <Link
-              href="/analysis"
-              className={`font-mono text-[10px] font-bold uppercase tracking-wider transition-all pb-0.5 hover:text-foreground ${
-                pathname === "/analysis"
-                  ? "text-primary border-b-2 border-primary"
-                  : "text-muted-foreground"
-              }`}
-            >
-              Video_Analysis
-            </Link>
-            <Link
-              href="/chat"
-              className={`font-mono text-[10px] font-bold uppercase tracking-wider transition-all pb-0.5 hover:text-foreground ${
-                pathname === "/chat"
-                  ? "text-primary border-b-2 border-primary"
-                  : "text-muted-foreground"
-              }`}
-            >
-              Intel_Chat
-            </Link>
-          </nav>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 bg-muted rounded-xs px-2.5 py-1 text-muted-foreground">
-            <Clock className="w-3.5 h-3.5 text-muted-foreground/80" />
-            <span className="font-mono text-2xs font-medium tracking-wide uppercase">
-              {utcTime || "CONNECTING CLOCK..."}
-            </span>
-          </div>
-
-          <button
-            onClick={() => setDarkMode(!darkMode)}
-            className="flex items-center justify-center w-8 h-8 rounded-full border border-border bg-card hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-            type="button"
-            title="Toggle Theme"
-          >
-            {darkMode ? (
-              <Sun className="w-4 h-4" />
-            ) : (
-              <Moon className="w-4 h-4" />
-            )}
-          </button>
-        </div>
-      </header>
+      <AppHeader
+        pageBadge="VIDEO_INTELLIGENCE_ANALYZER"
+        utcTime={utcTime}
+        darkMode={darkMode}
+        setDarkMode={setDarkMode}
+      />
 
       {/* ── MAIN LAYOUT CONTENT ── */}
       <main className="flex flex-1 gap-3 overflow-hidden p-3 lg:gap-4 lg:p-4">
