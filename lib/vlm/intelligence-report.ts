@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import sharp from "sharp";
 import { db } from "@/lib/db";
 import { gemmaJson, gemmaVisionJson } from "./cerebras-client";
 import {
@@ -42,7 +42,10 @@ async function analyzeSampleBatch(
 ): Promise<Partial<IntelligenceReport>> {
   const images: { base64: string; label: string }[] = [];
   for (const f of batch) {
-    const buf = await readFile(join(framesDir, f.file));
+    const buf = await sharp(join(framesDir, f.file))
+      .resize(640, null, { withoutEnlargement: true })
+      .jpeg({ quality: 70 })
+      .toBuffer();
     images.push({
       base64: buf.toString("base64"),
       label: `${f.timestampSec}s`,

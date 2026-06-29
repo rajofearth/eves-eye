@@ -43,11 +43,10 @@ export class VideoAnalysisService {
           timestampSec: i + 1,
         }));
 
-      // 1. Run the fast intelligence report first to immediately populate summary, threats and events
-      await runIntelligenceReport(jobId, framesDir, frameEntries);
+      // 1. Run Intelligence Report and VLM Frame Scanner in parallel (overlapped latency)
+      const intelTask = runIntelligenceReport(jobId, framesDir, frameEntries);
 
-      // 2. Run the heavy VLM frame scanner to identify bounding boxes and detect humans/objects
-      await runBatchedConcurrent(
+      const frameScanTask = runBatchedConcurrent(
         frameEntries,
         5, // Batch size of 5 (Cerebras image limit)
         PIPELINE.FRAME_SCAN_CONCURRENCY,
@@ -72,7 +71,9 @@ export class VideoAnalysisService {
         },
       );
 
-      // 3. Run the face identification task ONLY on the frames where a human was detected
+      await Promise.all([intelTask, frameScanTask]);
+
+      // 2. Run the face identification task ONLY on the frames where humans were detected
       await runPeopleIdentification(jobId, framesDir, frameEntries);
 
       db.prepare("UPDATE video_jobs SET status = 'completed' WHERE id = ?").run(jobId);

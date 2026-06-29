@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import sharp from "sharp";
 import { db } from "@/lib/db";
 import { gemmaVisionJson } from "./cerebras-client";
 
@@ -25,7 +25,10 @@ export async function scanFrame(
   framePath: string,
   frameIndex: number,
 ): Promise<FrameScanResult> {
-  const imageBuffer = await readFile(framePath);
+  const imageBuffer = await sharp(framePath)
+    .resize(640, null, { withoutEnlargement: true })
+    .jpeg({ quality: 70 })
+    .toBuffer();
   const base64Image = imageBuffer.toString("base64");
 
   const prompt = `Analyze surveillance frame ${frameIndex} (1 fps video).
@@ -56,7 +59,10 @@ export async function scanFramesBatch(
   for (const f of batch) {
     const framePath = join(framesDir, f.file);
     try {
-      const buf = await readFile(framePath);
+      const buf = await sharp(framePath)
+        .resize(640, null, { withoutEnlargement: true })
+        .jpeg({ quality: 70 })
+        .toBuffer();
       images.push({
         base64: buf.toString("base64"),
         label: `frame_${f.frameIndex}`,

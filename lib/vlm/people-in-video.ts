@@ -72,7 +72,10 @@ async function identifyFacesInBatch(
 ): Promise<BatchFace[]> {
   const images: { base64: string; label: string }[] = [];
   for (const f of batch) {
-    const buf = await readFile(join(framesDir, f.file));
+    const buf = await sharp(join(framesDir, f.file))
+      .resize(640, null, { withoutEnlargement: true })
+      .jpeg({ quality: 70 })
+      .toBuffer();
     images.push({ base64: buf.toString("base64"), label: `frame_${f.frameIndex}` });
   }
 
