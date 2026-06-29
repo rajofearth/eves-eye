@@ -388,6 +388,22 @@ export default function AnalysisPage() {
     setDuration(0);
   };
 
+  const handleClearCache = async () => {
+    if (activeJobId) {
+      try {
+        await fetch("/api/analysis/clear", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId: activeJobId }),
+        });
+        triggerToast("CACHE CLEARED: Removed report & files from storage");
+      } catch (err) {
+        console.error("Failed to clear cache:", err);
+      }
+    }
+    handleReset();
+  };
+
   // --- Dynamic Pipeline Steps ---
   const pipelineSteps = useMemo<PipelineStep[]>(() => {
     const isDone = (phase: typeof uploadPhase) => {
@@ -613,7 +629,7 @@ export default function AnalysisPage() {
                 <span className="text-border/60">|</span>
                 <button
                   type="button"
-                  onClick={() => handleUploadVideo(selectedVideoFile)}
+                  onClick={() => selectedVideoFile && handleUploadVideo(selectedVideoFile, true)}
                   className="text-[9px] font-mono font-bold text-muted-foreground hover:text-white uppercase tracking-wider transition-colors cursor-pointer"
                 >
                   Fresh Run
@@ -621,7 +637,7 @@ export default function AnalysisPage() {
                 <span className="text-border/60">|</span>
                 <button
                   type="button"
-                  onClick={handleReset}
+                  onClick={handleClearCache}
                   className="text-[9px] font-mono font-bold text-red-500 hover:text-red-400 uppercase tracking-wider transition-colors cursor-pointer"
                 >
                   Clear Cache
