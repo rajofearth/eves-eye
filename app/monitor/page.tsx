@@ -39,7 +39,7 @@ function uid(): string {
 
 export default function LiveMonitorPage() {
   // --- Dynamic Cameras State ---
-  const [cameras, setCameras] = useState<MockCamera[]>(() => loadCameras());
+  const [cameras, setCameras] = useState<MockCamera[]>(INITIAL_CAMERAS);
 
   // --- Page States ---
   const [activeCameraId, setActiveCameraId] = useState<string>("cam-webcam");
@@ -117,8 +117,9 @@ export default function LiveMonitorPage() {
     initialDelayMs: 4800,
   });
 
-  // --- Sync cameras when updated from settings page ---
+  // --- Load persisted cameras after mount; sync when updated from settings ---
   useEffect(() => {
+    setCameras(loadCameras());
     const handleCamerasUpdated = () => {
       setCameras(loadCameras());
     };
