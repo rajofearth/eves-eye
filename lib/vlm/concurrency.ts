@@ -36,13 +36,13 @@ export async function runBatchedConcurrent<T>(
 
 export const PIPELINE = {
   /** Parallel Gemma calls per frame-scan worker pool */
-  FRAME_SCAN_CONCURRENCY: 12,
+  FRAME_SCAN_CONCURRENCY: 6,
   /** Frames per face-detection batch (Cerebras max 5 images) */
   PEOPLE_BATCH_SIZE: MAX_IMAGES_PER_REQUEST,
   /** Parallel face-detection batches */
-  PEOPLE_BATCH_CONCURRENCY: 10,
+  PEOPLE_BATCH_CONCURRENCY: 4,
   /** Parallel face crops / saves */
-  FACE_CROP_CONCURRENCY: 12,
+  FACE_CROP_CONCURRENCY: 8,
   /** Parallel Gemma visual dedup batches */
   FACE_DEDUP_CONCURRENCY: 8,
   /** Frames sampled for intelligence report (evenly spaced) */

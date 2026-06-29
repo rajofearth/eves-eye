@@ -15,7 +15,7 @@ export function getCerebrasClient(): Cerebras {
     if (!apiKey) {
       throw new Error("CEREBRAS_API_KEY environment variable is not configured.");
     }
-    sharedClient = new Cerebras({ apiKey });
+    sharedClient = new Cerebras({ apiKey, timeout: 25000 });
   }
   return sharedClient;
 }
