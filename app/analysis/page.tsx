@@ -270,7 +270,7 @@ export default function AnalysisPage() {
   }, [activeJobId, uploadPhase, triggerToast]);
 
   // --- Upload Video Form Action ---
-  const handleUploadVideo = async (file: File) => {
+  const handleUploadVideo = async (file: File, isFresh = false) => {
     setSelectedVideoFile(file);
     setUploadPhase("uploading");
     setPipelineProgress(0);
@@ -282,6 +282,9 @@ export default function AnalysisPage() {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      if (isFresh) {
+        formData.append("fresh", "true");
+      }
 
       const res = await fetch("/api/analysis/upload", {
         method: "POST",
@@ -294,7 +297,11 @@ export default function AnalysisPage() {
       if (data.ok) {
         setActiveJobId(data.jobId);
         setUploadPhase("pending");
-        triggerToast("PAYLOAD MOUNTED: Starting background processing");
+        if (data.status === "completed") {
+          triggerToast("CACHE HIT: Loaded pre-analyzed video report");
+        } else {
+          triggerToast("PAYLOAD MOUNTED: Starting background processing");
+        }
       } else {
         throw new Error(data.error || "Failed to initialize analysis");
       }
