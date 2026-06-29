@@ -38,16 +38,25 @@ async function callGemma(
   client: Cerebras,
   messages: AgentMessage[],
 ): Promise<string> {
-  const response = await client.chat.completions.create({
-    model: "gemma-4-31b",
-    messages: messages as Parameters<
-      typeof client.chat.completions.create
-    >[0]["messages"],
-  });
-  return (
-    (response as unknown as CerebrasResponse).choices?.[0]?.message
-      ?.content ?? ""
-  );
+  try {
+    const response = await client.chat.completions.create({
+      model: "gemma-4-31b",
+      messages: messages as Parameters<
+        typeof client.chat.completions.create
+      >[0]["messages"],
+    });
+    return (
+      (response as unknown as CerebrasResponse).choices?.[0]?.message
+        ?.content ?? ""
+    );
+  } catch (err) {
+    // Cerebras throws if it receives an empty assistant message in history
+    // or if the model returns empty output. Return empty string so the
+    // loop's nudge / forced-synthesis path can recover cleanly.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[callGemma] API error:", msg);
+    return "";
+  }
 }
 
 async function streamFinalText(

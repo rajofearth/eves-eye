@@ -724,6 +724,14 @@ export default function ChatPage() {
                 if (event.type === "done") {
                   return { ...m, streaming: false };
                 }
+                if (event.type === "error") {
+                  const errMsg = (event as unknown as { message?: string }).message;
+                  return {
+                    ...m,
+                    streaming: false,
+                    content: m.content || `⚠ ${errMsg ?? "Stream error"}`,
+                  };
+                }
                 return m;
               }),
             );
@@ -732,6 +740,13 @@ export default function ChatPage() {
           }
         }
       }
+        // Stream body closed \u2014 finalize the bubble regardless of whether the
+        // 'done' SSE event was processed (guards against same-TCP-segment race).
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantMsgId ? { ...m, streaming: false } : m,
+          ),
+        );
     } catch (err) {
       setMessages((prev) =>
         prev.map((m) =>

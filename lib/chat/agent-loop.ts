@@ -46,16 +46,20 @@ export function buildToolResultFollowUp(
   if (toolName === "run_video_subagent") {
     return `${base}
 
-Subagent investigation complete. You MUST now either:
-1. Call another tool or subagent if gaps remain, using <tool_call>{"name":"...","args":{...}}</tool_call>
-2. OR synthesize ALL subagent/tool findings into your final intelligence briefing for the analyst (no tool_call tags).
+Subagent investigation complete. You MUST immediately do ONE of:
+1. Call another tool or subagent if more investigation is needed — use <tool_call>{"name":"...","args":{...}}</tool_call>
+2. Write your COMPLETE final intelligence briefing synthesizing ALL findings above — no tool_call tags.
 
-Do NOT end with an empty response. The analyst is waiting for your consolidated answer.`;
+Do NOT output an empty response. The analyst is waiting.`;
   }
 
   return `${base}
 
-Tool complete. Continue investigating — call another tool if needed, or deliver your final intelligence briefing when ready (no tool_call tags).`;
+Tool complete. You MUST immediately do ONE of:
+1. Call another tool if more data is needed — use <tool_call>{"name":"...","args":{...}}</tool_call>
+2. Write your complete final intelligence briefing now — no tool_call tags.
+
+Do NOT output an empty response.`;
 }
 
 export function buildEmptyResponseNudge(): string {
@@ -86,7 +90,11 @@ export function appendToolExchange(
   toolResult: ToolResult,
   toolName: string,
 ): void {
-  messages.push({ role: "assistant", content: assistantRaw });
+  // Cerebras rejects assistant messages with empty content — use the raw
+  // output if available, otherwise a minimal placeholder so the history
+  // stays valid for the next API call.
+  const safeAssistantContent = assistantRaw.trim() || `<tool_call>{"name":"${toolName}","args":{}}</tool_call>`;
+  messages.push({ role: "assistant", content: safeAssistantContent });
 
   if (toolResult.imageBase64) {
     messages.push({
