@@ -27,6 +27,30 @@ export const dynamic = "force-dynamic";
 
 interface CerebrasResponse {
   choices?: { message?: { content?: string } }[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    prompt_tokens_details?: {
+      cached_tokens?: number;
+    };
+  };
+  time_info?: {
+    completion_time?: number;
+    total_time?: number;
+  };
+}
+
+interface GemmaCallResult {
+  content: string;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    cached_tokens: number;
+    completion_tps?: number;
+    total_time?: number;
+  };
 }
 
 function sse(ctrl: ReadableStreamDefaultController, data: unknown) {
@@ -38,7 +62,8 @@ function sse(ctrl: ReadableStreamDefaultController, data: unknown) {
 async function callGemma(
   client: Cerebras,
   messages: AgentMessage[],
-): Promise<string> {
+  sessionId: string,
+): Promise<GemmaCallResult> {
   try {
     const pruned = pruneMessagesImageBudget(messages, 5);
     const response = await client.chat.completions.create({
@@ -46,18 +71,37 @@ async function callGemma(
       messages: pruned as Parameters<
         typeof client.chat.completions.create
       >[0]["messages"],
-    });
-    return (
-      (response as unknown as CerebrasResponse).choices?.[0]?.message
-        ?.content ?? ""
-    );
+      prompt_cache_key: sessionId, // enable prompt caching for multi-turn session
+    } as any);
+
+    const choices = (response as unknown as CerebrasResponse).choices;
+    const content = choices?.[0]?.message?.content ?? "";
+    const usageObj = (response as unknown as CerebrasResponse).usage;
+    const timeInfo = (response as unknown as CerebrasResponse).time_info;
+
+    let completionTps: number | undefined;
+    if (usageObj && timeInfo?.completion_time && timeInfo.completion_time > 0) {
+      completionTps = Math.round(usageObj.completion_tokens / timeInfo.completion_time);
+    }
+
+    return {
+      content,
+      usage: usageObj ? {
+        prompt_tokens: usageObj.prompt_tokens,
+        completion_tokens: usageObj.completion_tokens,
+        total_tokens: usageObj.total_tokens,
+        cached_tokens: usageObj.prompt_tokens_details?.cached_tokens ?? 0,
+        completion_tps: completionTps,
+        total_time: timeInfo?.total_time,
+      } : undefined,
+    };
   } catch (err) {
     // Cerebras throws if it receives an empty assistant message in history
     // or if the model returns empty output. Return empty string so the
     // loop's nudge / forced-synthesis path can recover cleanly.
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[callGemma] API error:", msg);
-    return "";
+    return { content: "" };
   }
 }
 
@@ -155,9 +199,13 @@ export async function POST(req: NextRequest) {
 
         const toolLog: { call: ToolCall; result: string }[] = [];
         let assistantFullText = "";
+        let lastUsage: any = null;
 
         for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration++) {
-          const raw = await callGemma(client, messages);
+          const { content: raw, usage } = await callGemma(client, messages, sessionId);
+          if (usage) {
+            lastUsage = usage;
+          }
           const toolCalls = parseToolCalls(raw);
 
           if (toolCalls.length > 0) {
@@ -223,21 +271,34 @@ export async function POST(req: NextRequest) {
             role: "user",
             content: buildForcedSynthesisPrompt(),
           });
-          const synthesis = stripToolCalls(await callGemma(client, messages));
-          assistantFullText = synthesis || toolLog.at(-1)?.result || "";
+          const { content: synthesis, usage: synUsage } = await callGemma(client, messages, sessionId);
+          const cleanText = stripToolCalls(synthesis);
+          assistantFullText = cleanText || toolLog.at(-1)?.result || "";
+          if (synUsage) {
+            lastUsage = synUsage;
+          }
           if (assistantFullText) {
             await streamFinalText(controller, assistantFullText);
           }
         }
 
+        // Stream performance details before ending
+        if (lastUsage) {
+          sse(controller, {
+            type: "performance",
+            performance: lastUsage,
+          });
+        }
+
         const toolCallsJson =
           toolLog.length > 0 ? JSON.stringify(toolLog) : null;
         db.prepare(
-          "INSERT INTO chat_messages (session_id, role, content, tool_calls, created_at) VALUES (?, 'assistant', ?, ?, ?)",
+          "INSERT INTO chat_messages (session_id, role, content, tool_calls, performance, created_at) VALUES (?, 'assistant', ?, ?, ?, ?)",
         ).run(
           sessionId,
           assistantFullText,
           toolCallsJson,
+          lastUsage ? JSON.stringify(lastUsage) : null,
           new Date().toISOString(),
         );
 

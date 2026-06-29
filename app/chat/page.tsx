@@ -56,6 +56,14 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   toolCalls: ToolCallRecord[] | null;
+  performance: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    cached_tokens: number;
+    completion_tps?: number;
+    total_time?: number;
+  } | null;
   created_at: string;
 }
 
@@ -70,6 +78,14 @@ interface StreamMessage {
     imageBase64?: string;
     mimeType?: string;
   }[];
+  performance?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    cached_tokens: number;
+    completion_tps?: number;
+    total_time?: number;
+  } | null;
   streaming: boolean;
 }
 
@@ -228,6 +244,25 @@ function MessageBubble({ msg }: { msg: StreamMessage }) {
             <span className="whitespace-pre-wrap">{msg.content}</span>
             {msg.streaming && (
               <span className="inline-block w-1.5 h-3.5 bg-primary ml-1 animate-pulse rounded-xs" />
+            )}
+          </div>
+        )}
+
+        {!isUser && msg.performance && (
+          <div className="flex flex-wrap gap-2 items-center text-[10px] font-mono text-muted-foreground/60 mt-1 select-none">
+            <span className="flex items-center gap-1 bg-muted px-1.5 py-0.5 rounded-xs border border-border" title="Output Generation Speed">
+              ⚡ {msg.performance.completion_tps ?? 0} t/s
+            </span>
+            <span className="flex items-center gap-1 bg-muted px-1.5 py-0.5 rounded-xs border border-border" title="Total Roundtrip Time">
+              ⏱ {msg.performance.total_time ? `${msg.performance.total_time.toFixed(2)}s` : "0.00s"}
+            </span>
+            <span className="flex items-center gap-1 bg-muted px-1.5 py-0.5 rounded-xs border border-border" title="Tokens (Completion / Prompt)">
+              🎫 {msg.performance.completion_tokens}c / {msg.performance.prompt_tokens}p
+            </span>
+            {msg.performance.cached_tokens > 0 && (
+              <span className="flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded-xs" title="Prompt Cache Hits">
+                🎯 {msg.performance.cached_tokens} cached ({Math.round((msg.performance.cached_tokens / msg.performance.prompt_tokens) * 100)}%)
+              </span>
             )}
           </div>
         )}
@@ -539,6 +574,7 @@ export default function ChatPage() {
         { type: "tool_call" as const, call: tc.call },
         { type: "tool_result" as const, result: tc.result },
       ]),
+      performance: m.performance || null,
       streaming: false,
     }));
     setMessages(loaded);
@@ -695,6 +731,7 @@ export default function ChatPage() {
               result?: string;
               imageBase64?: string;
               mimeType?: string;
+              performance?: any;
             };
 
             setMessages((prev) =>
@@ -720,6 +757,9 @@ export default function ChatPage() {
                       },
                     ],
                   };
+                }
+                if (event.type === "performance") {
+                  return { ...m, performance: event.performance };
                 }
                 if (event.type === "done") {
                   return { ...m, streaming: false };

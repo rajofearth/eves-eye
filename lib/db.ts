@@ -124,6 +124,13 @@ try {
   // Column already exists, safe to ignore
 }
 
+// Handle migration for existing databases missing performance on chat_messages
+try {
+  db.exec("ALTER TABLE chat_messages ADD COLUMN performance TEXT");
+} catch (_e) {
+  // Column already exists, safe to ignore
+}
+
 // Prepared statements for fast inserts
 const insertDetectionStmt = db.prepare(`
   INSERT INTO detections (timestamp, camera_id, label, x1, y1, x2, y2, confidence)

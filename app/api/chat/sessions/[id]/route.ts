@@ -39,6 +39,7 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
       role: string;
       content: string;
       tool_calls: string | null;
+      performance: string | null;
       created_at: string;
     }[];
 
@@ -51,6 +52,7 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
       messages: messages.map((m) => ({
         ...m,
         toolCalls: m.tool_calls ? JSON.parse(m.tool_calls) : null,
+        performance: m.performance ? JSON.parse(m.performance) : null,
       })),
     });
   } catch (err) {
