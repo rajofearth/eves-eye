@@ -1,36 +1,33 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Eve's Eye
+
+Eve's Eye is a real-time, AI-powered security monitoring and threat detection system. Built with Next.js 16, it leverages the **Cerebras Cloud SDK** (running Gemma 4 31B) for high-speed object detection and threat analysis.
+
+## Demo
+
+<video src="public/demo.mp4" controls width="100%"></video>
+
+## Key Features
+
+- **Live Multi-Camera Monitoring**: Supports active browser webcams and simulated video feeds in a responsive grid.
+- **Real-time Threat Detection**: Uses Gemma 4 31B via Cerebras for rapid object identification and threat assessment.
+- **Auto-Promotion**: Automatically highlights feeds that detect critical security threats.
+- **Local SQLite Database**: Fast, reliable logging of detections, threats, and video analysis jobs using Better SQLite3 (with WAL mode).
 
 ## Getting Started
 
-First, run the development server:
+First, install the dependencies using your preferred package manager (pnpm is recommended):
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
+```
+Copy the `.env.example` file to `.env` and update the environment variables as needed.
+```bash
+cp .env.example .env
+```
+Then, run the development server:
+
+```bash
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Open [http://localhost:3000](http://localhost:3000) with your browser to view the surveillance dashboard.
