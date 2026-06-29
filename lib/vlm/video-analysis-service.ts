@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { db } from "../db";
 import { PIPELINE, runBatchedConcurrent, runConcurrent } from "./concurrency";
-import { persistFrameDetections, scanFramesBatch, type FrameEntry } from "./frame-scanner";
+import { persistFrameDetections, scanFramesBatch, type FrameEntry, type BatchedFrameScanResult } from "./frame-scanner";
 import { runIntelligenceReport } from "./intelligence-report";
 import { runPeopleIdentification } from "./people-in-video";
 
@@ -52,7 +52,28 @@ export class VideoAnalysisService {
         5, // Batch size of 5 (Cerebras image limit)
         PIPELINE.FRAME_SCAN_CONCURRENCY,
         async (batch) => {
-          const result = await scanFramesBatch(batch, framesDir);
+          let result: BatchedFrameScanResult = { detections: [] };
+          let retries = 3;
+          while (retries > 0) {
+            try {
+              result = await scanFramesBatch(batch, framesDir);
+              break;
+            } catch (err) {
+              retries--;
+              console.warn(
+                `[VLM_FRAME_SCANNER] Batch failed, retrying (${3 - retries}/3)...`,
+                err,
+              );
+              if (retries === 0) {
+                console.error(
+                  "[VLM_FRAME_SCANNER] Batch failed all retries, skipping.",
+                  err,
+                );
+              } else {
+                await new Promise((resolve) => setTimeout(resolve, 1500));
+              }
+            }
+          }
 
           for (const f of batch) {
             // Find detections matching this frame's index (supports absolute and 1-based relative)

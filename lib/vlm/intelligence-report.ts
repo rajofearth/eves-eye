@@ -147,7 +147,28 @@ export async function runIntelligenceReport(
   const partialReports: Partial<IntelligenceReport>[] = [];
 
   await runConcurrent(batches, PIPELINE.INTEL_BATCH_CONCURRENCY, async (batch) => {
-    const partial = await analyzeSampleBatch(framesDir, batch);
+    let partial: Partial<IntelligenceReport> = {};
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        partial = await analyzeSampleBatch(framesDir, batch);
+        break;
+      } catch (err) {
+        retries--;
+        console.warn(
+          `[INTEL_REPORT] Batch failed, retrying (${3 - retries}/3)...`,
+          err,
+        );
+        if (retries === 0) {
+          console.error(
+            "[INTEL_REPORT] Batch failed all retries, skipping.",
+            err,
+          );
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+      }
+    }
     partialReports.push(partial);
   });
 

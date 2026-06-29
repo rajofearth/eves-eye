@@ -370,7 +370,28 @@ export async function runPeopleIdentification(
     PIPELINE.PEOPLE_BATCH_SIZE,
     PIPELINE.PEOPLE_BATCH_CONCURRENCY,
     async (batch, batchIndex) => {
-      const found = await identifyFacesInBatch(framesDir, batch, batchIndex);
+      let found: BatchFace[] = [];
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          found = await identifyFacesInBatch(framesDir, batch, batchIndex);
+          break;
+        } catch (err) {
+          retries--;
+          console.warn(
+            `[PEOPLE_IDENTIFIER] Batch failed, retrying (${3 - retries}/3)...`,
+            err,
+          );
+          if (retries === 0) {
+            console.error(
+              "[PEOPLE_IDENTIFIER] Batch failed all retries, skipping.",
+              err,
+            );
+          } else {
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+        }
+      }
       batchFaceSlots[batchIndex] = found;
     },
   );
