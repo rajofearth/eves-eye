@@ -316,6 +316,10 @@ export default function AnalysisPage() {
       setUploadPhase("error");
       const errMsg = err instanceof Error ? err.message : String(err);
       setVlmSummary(`Failed to process upload: ${errMsg}`);
+    } finally {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
     }
   };
 

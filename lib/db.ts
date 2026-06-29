@@ -8,7 +8,7 @@ const globalForDb = globalThis as unknown as {
   db: Database.Database | undefined;
 };
 
-const connection = globalForDb.db ?? new Database(dbPath);
+const connection = globalForDb.db ?? new Database(dbPath, { timeout: 8000 });
 
 if (process.env.NODE_ENV !== "production") {
   globalForDb.db = connection;
@@ -16,6 +16,9 @@ if (process.env.NODE_ENV !== "production") {
 
 // Export the raw connection for dynamic API operations (like /api/threats)
 export const db = connection;
+
+// Enable WAL journal mode for concurrent read/write stability
+db.pragma("journal_mode = WAL");
 
 // Initialize SQLite tables
 db.exec(`
